@@ -97,3 +97,7 @@ class CategoryPipeline(EntityPipeline):
         metrics_path.write_text(json.dumps(full_metrics, indent=2), encoding="utf-8")
         print(f"DONE run_id={run_id} total_seconds={full_metrics['timing_seconds_total']}")
         return {"run_id": run_id, "run_dir": str(run_dir), **match_out, "resolution": resolution, "metrics": full_metrics}
+
+
+    def ingest(self):
+
