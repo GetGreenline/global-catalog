@@ -144,6 +144,9 @@ def tfidf_intra(df_norm: pd.DataFrame, threshold: float) -> pd.DataFrame:
                .agg(n=("id", "count"))
                .reset_index()
     )
+    # This is more useful in case we have a source that is not garanteed to
+    # be a clean one (does not apply to CategoriesV1 case)
+
     vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=1)
     rows = []
     for src in ds["source"].dropna().unique():

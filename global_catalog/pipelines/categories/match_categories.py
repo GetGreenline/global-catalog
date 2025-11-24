@@ -17,7 +17,7 @@ from global_catalog.matching.categories.path_tfidf import (
     exact_cross, exact_intra, tfidf_cross, tfidf_intra
 )
 from global_catalog.matching.categories.pair_filters import (
-    drop_intra_parent_child, drop_same_l1l2_diff_l3
+    drop_intra_parent_child
 )
 from global_catalog.matching.categories.summarize import (
     attach_pretty_paths, summarize_per_category, attach_summary_flags
@@ -25,6 +25,7 @@ from global_catalog.matching.categories.summarize import (
 from global_catalog.pipelines.categories.resolve_category_pairs import (
     build_resolution_from_pairs, build_intra_resolution_from_pairs
 )
+from global_catalog.transformers.categories.category_normalizer import CategoryNormalizer
 
 EXPECTED_RAW = ["level_one","level_two","level_three","source","updated_at"]
 
@@ -135,7 +136,6 @@ def main():
     )
 
     combined = drop_intra_parent_child(combined, df_norm)
-    combined = drop_same_l1l2_diff_l3(combined, df_norm)
 
     combined = attach_pretty_paths(combined, df_pretty_like)
     summary = summarize_per_category(combined)
@@ -172,7 +172,7 @@ def main():
         "unordered_intra": int(unordered_intra_df.shape[0]),
         "resolution_rows": int(resolution.shape[0]),
         "intra_resolution_rows": intra_rows,
-        "similarity_stats": describe_similarity(combined["similarity"]) if "similarity" in combined.columns else {},
+        "similarity_stats": {},
         "timing_seconds": round(time.perf_counter() - t0, 3),
         "threshold": args.tfidf_threshold,
         "outputs": {

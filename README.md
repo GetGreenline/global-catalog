@@ -1,58 +1,43 @@
 
-# Welcome to your CDK Python project!
+# Global Catalog
 
-This is a blank project for CDK development with Python.
+Data pipelines for normalizing and matching catalog entities (categories and products). The project currently focuses on the categories flow that reads raw snapshots from S3, normalizes them, performs TF‑IDF-based matching, resolves winning category IDs, and writes run artifacts locally.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+## Setup
 
-This project is set up like a standard Python project.  The initialization
-process also creates a virtualenv within this project, stored under the `.venv`
-directory.  To create the virtualenv it assumes that there is a `python3`
-(or `python` for Windows) executable in your path with access to the `venv`
-package. If for any reason the automatic creation of the virtualenv fails,
-you can create the virtualenv manually.
+1. Create/activate a virtualenv: `python3 -m venv .venv && source .venv/bin/activate`
+2. Install deps: `pip install -r requirements.txt`
+3. Ensure you can assume the sandbox AWS role (the raw categories live in `s3://blaze-sandbox-global-catalog-service-staging-bucket/global-catalog/categories/...`).
 
-To manually create a virtualenv on MacOS and Linux:
+## Running Categories From S3
 
-```
-$ python3 -m venv .venv
-```
+CLI entrypoint: `python -m global_catalog.scripts.categories.run_categories_from_s3`
 
-After the init process completes and the virtualenv is created, you can use the following
-step to activate your virtualenv.
+Parameters:
+- `--date-prefix`: Partition under `<source>/raw/<date>/categories.csv`. Accepts `YYYYMMDD`, `YYYY-MM-DD`, or `YYYY/MM/DD`.
+- `--sources`: One or more source folders, e.g. `weedmaps hoodie`.
+- `--out-root`: Local directory where run folders (`<date>_<uuid>/`) are created. Defaults to `GC_OUT_ROOT` (see `global_catalog/config/settings.py`).
+- `--s3-run-prefix`, `--s3-latest-prefix`: Optional destinations when mirroring artifacts to S3 (not used yet but wired into the pipeline config).
 
-```
-$ source .venv/bin/activate
-```
+Environment:
+- `AWS_PROFILE` / `GC_S3_PROFILE`: profile that can read the sandbox bucket.
+- `AWS_REGION`: defaults to `us-east-1`.
+- Override any defaults in `global_catalog/config/settings.py` as needed.
 
-If you are a Windows platform, you would activate the virtualenv like this:
+Example command (mirrors the latest successful run):
 
-```
-% .venv\Scripts\activate.bat
-```
-
-Once the virtualenv is activated, you can install the required dependencies.
-
-```
-$ pip install -r requirements.txt
+```bash
+AWS_PROFILE=sandbox-admin AWS_REGION=us-east-1 \
+python -m global_catalog.scripts.categories.run_categories_from_s3 \
+  --date-prefix 20251031 \
+  --sources weedmaps hoodie \
+  --out-root artifacts
 ```
 
-At this point you can now synthesize the CloudFormation template for this code.
+Expected output:
+- Console logs for each pipeline step (ingest/normalize/match/resolve) plus a final `Artifacts directory: /path/to/run`.
+- Local run dir contains `pairs.parquet`, `summary.parquet`, `sample.csv`, `resolution.{parquet,csv}`, `category_global_id_map.{parquet,csv}`, and `metrics.json`.
 
-```
-$ cdk synth
-```
+## Products V1 (In Progress)
 
-To add additional dependencies, for example other CDK libraries, just add
-them to your `setup.py` file and rerun the `pip install -r requirements.txt`
-command.
-
-## Useful commands
-
- * `cdk ls`          list all stacks in the app
- * `cdk synth`       emits the synthesized CloudFormation template
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk docs`        open CDK documentation
-
-Enjoy!
+Product ingestion/matching is being bootstrapped; CLI and documentation will be added once the first end-to-end path is ready.
