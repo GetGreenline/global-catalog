@@ -7,21 +7,14 @@ import pandas as pd
 from global_catalog.transformers.categories.category_normalizer import CategoryNormalizer
 
 from global_catalog.matching.categories.path_tfidf import (
-    exact_cross, exact_intra, tfidf_intra,
-    unordered_exact_cross, unordered_exact_intra,
-    tfidf_cross_mutual, tfidf_cross_with_perm12, unordered_exact_fallback
-)
-
-from global_catalog.matching.categories.path_tfidf import (
-    exact_cross, exact_intra, tfidf_cross, tfidf_intra,
-    unordered_exact_cross, unordered_exact_intra,
+    exact_cross, tfidf_cross_with_perm12, unordered_exact_fallback,
     l3_l3_cross, l2_l3_cross,
 )
 from global_catalog.matching.categories.summarize import (
     attach_pretty_paths, summarize_per_category, attach_summary_flags
 )
 from global_catalog.matching.categories.blocking import (
-    tfidf_cross_blocked, tfidf_intra_blocked
+    tfidf_cross_blocked
 )
 
 @dataclass
