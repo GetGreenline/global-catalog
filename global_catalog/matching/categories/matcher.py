@@ -35,7 +35,14 @@ class CategoriesMatcher:
     def normalize(self, df_raw: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         print("NORMALIZE: schema gate")
         df = df_raw
+        # Handle timestamp conversion with fallback to current timestamp for invalid values
         df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
+        # Replace NaT values with current timestamp
+        current_time = pd.Timestamp.now()
+        nat_mask = pd.isna(df["updated_at"])
+        if nat_mask.any():
+            print(f"NORMALIZE: Replacing {nat_mask.sum()} NaT timestamps with current time")
+            df.loc[nat_mask, "updated_at"] = current_time
 
         print("NORMALIZE: run text rules")
         t = time.perf_counter()
