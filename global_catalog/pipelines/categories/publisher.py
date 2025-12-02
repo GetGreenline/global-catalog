@@ -45,13 +45,16 @@ class CategoriesPublisher:
         outputs: Dict[str, str] = {"run_dir": str(run_dir)}
 
         category_global_id_map_df = resolution_payload.get("category_global_id_map")
-        map_parquet = run_dir / "category_global_id_map.parquet"
-        map_csv = run_dir / "category_global_id_map.csv"
+        staging_parquet = run_dir / "staging_categories_id_mapping.parquet"
+        staging_csv = run_dir / "staging_categories_id_mapping.csv"
         if category_global_id_map_df is not None:
-            category_global_id_map_df.to_parquet(map_parquet, index=False)
-            category_global_id_map_df.to_csv(map_csv, index=False)
-        outputs["category_global_id_map_local"] = str(map_parquet)
-        outputs["category_global_id_map_csv_local"] = str(map_csv)
+            staged_df = self._format_category_global_id_map(category_global_id_map_df)
+            staged_df.to_parquet(staging_parquet, index=False)
+            staged_df.to_csv(staging_csv, index=False)
+        outputs["category_global_id_map_local"] = str(staging_parquet)
+        outputs["category_global_id_map_csv_local"] = str(staging_csv)
+        outputs["staging_categories_id_mapping_parquet"] = str(staging_parquet)
+        outputs["staging_categories_id_mapping_csv"] = str(staging_csv)
 
         pairs = match_results.get("pairs")
         summary = match_results.get("summary")
@@ -79,6 +82,14 @@ class CategoriesPublisher:
         outputs["resolution_csv_local"] = str(resolution_csv)
 
         return outputs
+
+    def _format_category_global_id_map(self, df):
+        staged = df.copy()
+        if "category_id" in staged.columns:
+            staged = staged.rename(columns={"category_id": "external_id"})
+        if "load_timestamp" in staged.columns:
+            staged = staged.drop(columns=["load_timestamp"])
+        return staged
 
     def _build_metrics(
         self,
