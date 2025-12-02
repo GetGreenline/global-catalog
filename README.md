@@ -36,7 +36,7 @@ python -m global_catalog.scripts.categories.run_categories_from_s3 \
 
 Expected output:
 - Console logs for each pipeline step (ingest/normalize/match/resolve) plus a final `Artifacts directory: /path/to/run`.
-- Local run dir contains `pairs.parquet`, `summary.parquet`, `sample.csv`, `resolution.{parquet,csv}`, `category_global_id_map.{parquet,csv}`, and `metrics.json`.
+- Local run dir contains `pairs.parquet`, `summary.parquet`, `sample.csv`, `resolution.{parquet,csv}`, `staging_categories_id_mapping.{parquet,csv}` (with `external_id` replacing `category_id`), and `metrics.json`.
 
 ## Products V1 (In Progress)
 
