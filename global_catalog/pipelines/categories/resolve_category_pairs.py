@@ -73,9 +73,14 @@ def _ensure_cats_contract(cats_df: pd.DataFrame) -> pd.DataFrame:
         df.loc[df["category_id"].str.lower().isin(["nan"]), "category_id"] = ""
 
     if "updated_at" not in df.columns:
-        df["updated_at"] = pd.NaT
+        df["updated_at"] = pd.Timestamp.now()
     else:
         df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
+        # Replace NaT values with current timestamp
+        nat_mask = pd.isna(df["updated_at"])
+        if nat_mask.any():
+            current_time = pd.Timestamp.now()
+            df.loc[nat_mask, "updated_at"] = current_time
 
     if "id" not in df.columns:
         df["id"] = ""
@@ -139,7 +144,7 @@ def build_resolution_from_pairs(pairs: pd.DataFrame, cats_df: pd.DataFrame) -> p
 
         kc = id_to_cat.get(kid, {}).get("category_id", "")
         dc = id_to_cat.get(did, {}).get("category_id", "")
-        kupd = id_to_cat.get(kid, {}).get("updated_at", pd.NaT)
+        kupd = id_to_cat.get(kid, {}).get("updated_at", pd.Timestamp.now())
 
         rows.append({
             "id": kid,
@@ -195,8 +200,8 @@ def build_intra_resolution_from_pairs(pairs: pd.DataFrame, cats_df: pd.DataFrame
 
     def score(cid):
         pp = pretty.get(cid)
-        ts = id_to_cat.get(cid, {}).get("updated_at", pd.NaT)
-        return (_count_levels(pp or ""), pd.to_datetime(ts) if pd.notna(ts) else pd.NaT, str(cid))
+        ts = id_to_cat.get(cid, {}).get("updated_at", pd.Timestamp.now())
+        return (_count_levels(pp or ""), pd.to_datetime(ts) if pd.notna(ts) else pd.Timestamp.now(), str(cid))
 
     keep_rows = []
     pairwise_rows = []
@@ -251,7 +256,7 @@ def build_intra_resolution_from_pairs(pairs: pd.DataFrame, cats_df: pd.DataFrame
                 "dropped_source": src,
                 "dropped_id": " | ".join(map(str, dropped)),
                 "dropped_category_id": " | ".join([id_to_cat.get(x, {}).get("category_id", "") for x in dropped]),
-                "updated_at": id_to_cat.get(best, {}).get("updated_at", pd.NaT),
+                "updated_at": id_to_cat.get(best, {}).get("updated_at", pd.Timestamp.now()),
                 "intra_policy": "most_complete_then_newest"
             })
             for dc, dp in zip(dropped, dropped_paths):
@@ -267,7 +272,7 @@ def build_intra_resolution_from_pairs(pairs: pd.DataFrame, cats_df: pd.DataFrame
                     "dropped_source": src,
                     "dropped_id": str(dc),
                     "dropped_category_id": id_to_cat.get(dc, {}).get("category_id", ""),
-                    "updated_at": id_to_cat.get(best, {}).get("updated_at", pd.NaT),
+                    "updated_at": id_to_cat.get(best, {}).get("updated_at", pd.Timestamp.now()),
                     "intra_policy": "most_complete_then_newest"
                 })
 
@@ -301,6 +306,11 @@ def global_category_id_map(cats_df: pd.DataFrame, resolution: pd.DataFrame) -> p
     winners = cats[cats["id"] == cats["anchor_id"]].copy()
 
     winners["updated_at"] = pd.to_datetime(winners["updated_at"], errors="coerce")
+    # Replace any remaining NaT values with current timestamp
+    nat_mask = pd.isna(winners["updated_at"])
+    if nat_mask.any():
+        current_time = pd.Timestamp.now()
+        winners.loc[nat_mask, "updated_at"] = current_time
     winners.sort_values(["id", "updated_at"], ascending=[True, False], inplace=True)
     winners = winners.drop_duplicates(subset=["id"], keep="first")
 
@@ -311,13 +321,11 @@ def global_category_id_map(cats_df: pd.DataFrame, resolution: pd.DataFrame) -> p
         .astype(str).str.strip()
     )
     winners.loc[winners["category_id"].str.lower().isin(["nan", "none"]), "category_id"] = ""
-
-    out = winners[["global_id", "category_id", "source", "updated_at"]].copy()
-    out["load_timestamp"] = datetime.now(timezone.utc).replace(tzinfo=None)
-
+    winners["country"] = winners["country"].astype(str).str.strip().str.upper()
+    out = winners[["global_id", "category_id", "source", "country", "updated_at"]].copy()
     assert out["global_id"].is_unique, "global_id must be unique after winners-only selection."
-
-    return out[["global_id", "category_id", "source", "updated_at", "load_timestamp"]]
+    # Note: load_timestamp column excluded from output parquet file
+    return out[["global_id", "category_id", "source", "country", "updated_at"]]
 
 
 def main():

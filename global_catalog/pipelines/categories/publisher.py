@@ -85,8 +85,6 @@ class CategoriesPublisher:
 
     def _format_category_global_id_map(self, df):
         staged = df.copy()
-        if "category_id" in staged.columns:
-            staged = staged.rename(columns={"category_id": "external_id"})
         if "load_timestamp" in staged.columns:
             staged = staged.drop(columns=["load_timestamp"])
         return staged
