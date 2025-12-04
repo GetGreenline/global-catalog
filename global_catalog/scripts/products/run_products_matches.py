@@ -14,13 +14,12 @@ def parse_args():
     parser.add_argument("--block-threshold", type=float, default=0.3, help="Blocking Jaccard threshold.")
     parser.add_argument("--match-threshold", type=float, default=0.75, help="Fuzzy matcher threshold.")
     parser.add_argument("--max-per-left", type=int, default=200, help="Max candidates per left record.")
-    parser.add_argument("--include-description", action="store_true", help="Include description tokens.")
     parser.add_argument("--description-token-limit", type=int, default=25, help="Max description tokens if enabled.")
     parser.add_argument("--strict-measure-only", action="store_true", help="Skip lenient measure blocking pass.")
     parser.add_argument(
         "--blocking-strategy",
         default="strategy_one",
-        choices=["strategy_one", "strategy_two", "strategy_three"],
+        choices=["strategy_one", "strategy_two", "strategy_three", "strategy_four", "strategy_five"],
         help="Which blocking strategy to execute.",
     )
     parser.add_argument(
@@ -41,7 +40,7 @@ def main():
     blocking_cfg = BlockingConfig(
         threshold=args.block_threshold,
         max_per_left=args.max_per_left,
-        include_description=args.include_description,
+        include_description=False,
         description_token_limit=args.description_token_limit,
         lenient_measure_pass=(not args.strict_measure_only),
         strategy_name=args.blocking_strategy,
@@ -50,8 +49,6 @@ def main():
     )
     fuzzy_cfg = FuzzyMatcherConfig(
         threshold=args.match_threshold,
-        include_description=args.include_description,
-        description_weight=0.1 if args.include_description else 0.0,
     )
 
     run_label = "strict" if args.strict_measure_only else "lenient"

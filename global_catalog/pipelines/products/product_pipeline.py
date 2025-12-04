@@ -11,12 +11,11 @@ from global_catalog.matching.products.blocking_v2 import (
     blocking_strategy_one,
     blocking_strategy_two,
     blocking_strategy_three,
+    blocking_strategy_four,
+    blocking_strategy_five,
     build_candidates,
 )
-from global_catalog.matching.products.fuzzy_matcher_v2 import (
-    FuzzyMatcherConfig,
-    run_fuzzy_matching,
-)
+from global_catalog.matching.products.fuzzy_matcher_v2 import FuzzyMatcherConfig, run_fuzzy_matching
 
 
 class ProductPipeline(EntityPipeline):
@@ -34,7 +33,7 @@ class ProductPipeline(EntityPipeline):
         normalizer: Optional[ProductNormalizer] = None,
         blocking_config: Optional[BlockingConfig] = None,
         fuzzy_config: Optional[FuzzyMatcherConfig] = None,
-        local_run: bool = False,
+        local_run: bool = True,
         pairs_cache_dir: Optional[str] = "artifacts/products/pairs",
     ):
         super().__init__(repo=repo, matcher=matcher, resolver=resolver, publisher_fn=publisher_fn)
@@ -83,11 +82,12 @@ class ProductPipeline(EntityPipeline):
         candidate_pairs, blocking_metrics = self._resolve_candidate_pairs(strategy_name, normalized_data)
 
         candidate_count = 0 if candidate_pairs is None else len(candidate_pairs)
-        print(f"[ProductPipeline] Blocking produced {candidate_count} candidate pairs.")
+        self.logger.info(f"Blocking produced {candidate_count} candidate pairs using {strategy_name}.")
 
-        print("[ProductPipeline] Running fuzzy matcher v2.")
+        self.logger.info("Running single-pass fuzzy matcher.")
         fuzzy_matches = run_fuzzy_matching(normalized_data, candidate_pairs, self.fuzzy_config)
-        print(f"[ProductPipeline] Fuzzy matcher retained {len(fuzzy_matches)} matches.")
+        fuzzy_breakdown = {"matches": int(len(fuzzy_matches))}
+        self.logger.info(f"Fuzzy matcher retained {len(fuzzy_matches)} matches.")
 
         return {
             "pairs": fuzzy_matches,
@@ -95,6 +95,7 @@ class ProductPipeline(EntityPipeline):
             "metrics": {
                 "blocking": blocking_metrics,
                 "fuzzy_pairs": int(len(fuzzy_matches)),
+                "fuzzy_breakdown": fuzzy_breakdown,
             },
             "blocking_strategy": strategy_name,
             "matcher_name": matcher_name,
@@ -166,6 +167,8 @@ class ProductPipeline(EntityPipeline):
             "strategy_one": blocking_strategy_one,
             "strategy_two": blocking_strategy_two,
             "strategy_three": blocking_strategy_three,
+            "strategy_four": blocking_strategy_four,
+            "strategy_five": blocking_strategy_five,
         }
         if not strategy_name:
             return blocking_strategy_one
@@ -179,7 +182,7 @@ class ProductPipeline(EntityPipeline):
     def _matcher_name(self) -> str:
         matcher = getattr(self, "matcher", None)
         if matcher is None:
-            return run_fuzzy_matching.__name__
+            return "run_fuzzy_matching"
         name = getattr(matcher, "__name__", None)
         if name:
             return name
@@ -194,10 +197,9 @@ class ProductPipeline(EntityPipeline):
         if self.local_run:
             cached_pairs, cached_metrics = self._load_cached_pairs(strategy_name)
             if cached_pairs is not None:
-                print(f"[ProductPipeline] Using cached candidate pairs for {strategy_name}.")
+                self.logger.info(f"Using cached candidate pairs for {strategy_name}.")
                 return cached_pairs, cached_metrics
-
-        print(f"[ProductPipeline] Running blocking strategy: {strategy_name}.")
+        self.logger.info(f"No cached pairs found; running blocking strategy {strategy_name}.")
         blocking_out = build_candidates(normalized_data, self.blocking_config, self.blocking_strategy)
         return blocking_out.get("pairs"), blocking_out.get("metrics", {})
 
@@ -205,14 +207,13 @@ class ProductPipeline(EntityPipeline):
         if not self.local_run or self.pairs_cache_dir is None:
             return None, {}
 
-        candidate_files = []
-        strategy_dir = self.pairs_cache_dir / strategy_name
-        if strategy_dir.exists():
-            candidate_files.extend(strategy_dir.glob("*.parquet"))
-
-        # Also allow files in the root pairs directory that include the strategy name.
-        pattern = f"*{strategy_name}*.parquet"
-        candidate_files.extend(self.pairs_cache_dir.glob(pattern))
+        candidate_files = [
+            path
+            for path in self.pairs_cache_dir.rglob("*.parquet")
+            if strategy_name in path.stem or strategy_name in path.as_posix()
+        ]
+        if not candidate_files:
+            candidate_files = list(self.pairs_cache_dir.rglob("*.parquet"))
         if not candidate_files:
             return None, {}
 
@@ -220,7 +221,7 @@ class ProductPipeline(EntityPipeline):
         try:
             pairs_df = pd.read_parquet(latest)
         except Exception as exc:
-            print(f"[ProductPipeline] Failed to load cached pairs from {latest}: {exc}")
+            self.logger.warning(f"Failed to load cached pairs from {latest}: {exc}")
             return None, {}
 
         metrics: Dict[str, Any] = {}
@@ -231,6 +232,6 @@ class ProductPipeline(EntityPipeline):
                     metadata = json.load(fh)
                 metrics = metadata.get("metrics", {})
             except Exception as exc:
-                print(f"[ProductPipeline] Failed to read pair metadata {meta_path}: {exc}")
+                self.logger.warning(f"Failed to read pair metadata {meta_path}: {exc}")
 
         return pairs_df, metrics

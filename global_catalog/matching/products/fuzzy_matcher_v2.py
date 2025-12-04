@@ -20,11 +20,11 @@ class FuzzyMatcherConfig:
     """Weights and knobs controlling the similarity calculation."""
 
     threshold: float = 0.75
-    include_description: bool = False
     name_weight: float = 0.8
-    description_weight: float = 0.1
     uom_weight: float = 0.05
     measure_weight: float = 0.05
+    strict_measure_threshold: float = 0.78
+    present_vs_null_threshold: float = 0.86
 
 
 def run_fuzzy_matching(
@@ -36,7 +36,6 @@ def run_fuzzy_matching(
     if pairs_df is None or pairs_df.empty:
         return _empty_matches()
     name_col = "product_name_norm" if "product_name_norm" in df_norm.columns else "normalized_product_name"
-    desc_col = "description_norm" if "description_norm" in df_norm.columns else "normalized_description"
     brand_col = "brand_name_norm" if "brand_name_norm" in df_norm.columns else "brand_name"
 
     left_idx_arr = pairs_df["left_index"].to_numpy()
@@ -46,7 +45,6 @@ def run_fuzzy_matching(
     idx_to_pos = {idx: pos for pos, idx in enumerate(df_sub.index)}
 
     names = df_sub[name_col].fillna("").astype(str).to_numpy()
-    descs = df_sub[desc_col].fillna("").astype(str).to_numpy() if cfg.include_description else None
     uoms = df_sub.get("uom_norm", "").fillna("").astype(str).str.lower().to_numpy()
     measures = df_sub.get("measure_mg", pd.Series([None] * len(df_sub), index=df_sub.index)).to_numpy()
     brands = df_sub.get(brand_col, pd.Series([""] * len(df_sub), index=df_sub.index)).fillna("").astype(str).to_numpy()
@@ -63,13 +61,6 @@ def run_fuzzy_matching(
         right_name = names[rj]
         name_score = fuzz.ratio(left_name, right_name) / 100.0
 
-        if cfg.include_description and descs is not None:
-            left_desc = descs[li]
-            right_desc = descs[rj]
-            desc_score = fuzz.ratio(left_desc, right_desc) / 100.0
-        else:
-            desc_score = 0.0
-
         uom_score = 1.0 if uoms[li] and uoms[li] == uoms[rj] else 0.0
         measure_penalty, measure_score = _measure_enforce_and_score(measures[li], measures[rj])
         if measure_penalty:
@@ -77,7 +68,6 @@ def run_fuzzy_matching(
 
         similarity = (
             cfg.name_weight * name_score
-            + cfg.description_weight * desc_score
             + cfg.uom_weight * uom_score
             + cfg.measure_weight * measure_score
         )
@@ -127,7 +117,7 @@ def _safe_str(value) -> str:
     return str(value).strip().lower()
 
 
-def _norm_measure(value):
+def normalize_measure_value(value) -> Optional[int]:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
     text = str(value).strip().lower()
@@ -145,8 +135,8 @@ def _norm_measure(value):
 
 
 def _measure_enforce_and_score(left, right):
-    left_norm = _norm_measure(left)
-    right_norm = _norm_measure(right)
+    left_norm = normalize_measure_value(left)
+    right_norm = normalize_measure_value(right)
     if left_norm is None or right_norm is None:
         return False, 0.5
     if left_norm != right_norm:

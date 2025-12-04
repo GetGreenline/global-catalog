@@ -9,3 +9,7 @@ awswrangler~=3.13.0
 numpy~=2.3.3
 scikit-learn~=1.7.2
 PyYAML~=6.0.3
+matplotlib~=3.10.7
+seaborn~=0.13.2
+pyarrow~=20.0.0
+ipython~=9.6.0

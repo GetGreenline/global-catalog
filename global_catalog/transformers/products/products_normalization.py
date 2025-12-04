@@ -28,6 +28,7 @@ class ProductNormalizer:
         self._num_or_fr = r'(\d+(?:\.\d+)?|\.\d+|\d+/\d+)'
         self.keep_columns = keep_columns or [
             "source",
+            "product_id",
             "brand_name_norm",
             "product_name_norm",
             "description_norm",
@@ -252,8 +253,15 @@ class ProductNormalizer:
         out = out.apply(self._maybe_fill_from_name, axis=1)
         out["measure_mg"] = [self._compute_mg(m, u) for m, u in zip(out.get("measure", []), out.get("uom", []))]
         out["product_name_norm"] = out["product_name"].apply(self._normalize_text).apply(lambda x: self._apply_synonyms(x, self.name_synonyms))
-        desc_norm = out["description"].apply(self._normalize_text)
-        out["description_norm"] = [self._desc_backfill(d, n) for d, n in zip(desc_norm, out["product_name_norm"])]
+        desc_source = "description" if "description" in out.columns else ("description_norm" if "description_norm" in out.columns else None)
+        if desc_source is None:
+            out["description"] = np.nan
+            desc_source = "description"
+        desc_norm = out[desc_source].apply(self._normalize_text)
+
+        #testing without limitation as min len was to small
+        #out["description_norm"] = [self._desc_backfill(d, n) for d, n in zip(desc_norm, out["product_name_norm"])]
+        out["description_norm"] = desc_norm
         out["brand_name_norm"] = out.get("brand_name", np.nan).apply(self._normalize_brand)
         out["uom_norm"] = out["uom"].map(self._normalize_uom_text)
         out["strain_type_norm"] = out.get("strain_type", np.nan).apply(self._normalize_strain_type)
@@ -303,8 +311,12 @@ class ProductNormalizer:
             u_source = out["product_variant_weight_unit"]
         out["uom_norm"] = u_source.map(self._normalize_uom_text) if u_source is not None else None
         out["product_name_norm"] = out["product_name"].apply(self._normalize_text).apply(lambda x: self._apply_synonyms(x, self.name_synonyms))
-        desc_norm = out["description"].apply(self._normalize_text)
-        out["description_norm"] = [self._desc_backfill(d, n) for d, n in zip(desc_norm, out["product_name_norm"])]
+        desc_source = "description" if "description" in out.columns else ("description_norm" if "description_norm" in out.columns else None)
+        if desc_source is None:
+            out["description"] = np.nan
+            desc_source = "description"
+        desc_norm = out[desc_source].apply(self._normalize_text)
+        out["description_norm"] = desc_norm
         out["brand_name_norm"] = out.get("brand_name", np.nan).apply(self._normalize_brand)
         out["strain_type_norm"] = out.get("strain_type", np.nan).apply(self._normalize_strain_type)
         out["states_norm"] = out.get("states", np.nan).apply(self._normalize_states)

@@ -11,7 +11,7 @@ from global_catalog.pipelines.common import new_run_id, prepare_run_dir
 
 
 class ProductMatchResolver:
-    """Persist product match artifacts (pairs + metrics) to the artifacts/products folder."""
+    """Persist product matching in artifacts for initial result analysis"""
 
     def __init__(self, out_root: str = "artifacts/products", run_label: str | None = None):
         self.out_root = Path(out_root)
@@ -82,6 +82,9 @@ class ProductMatchResolver:
                 continue
             idx_values = df[idx_col].astype(int)
             subset = normalized_data.loc[idx_values]
-            df[f"{prefix}_measure_mg"] = subset["measure_mg"].to_list()
-            df[f"{prefix}_description_norm"] = subset.get("description_norm", pd.Series([""] * len(subset))).to_list()
+            default_none = pd.Series([None] * len(subset), index=subset.index)
+            default_empty = pd.Series([""] * len(subset), index=subset.index)
+            df[f"{prefix}_measure_mg"] = subset.get("measure_mg", default_none).to_list()
+            df[f"{prefix}_description_norm"] = subset.get("description_norm", default_empty).to_list()
+            df[f"{prefix}_product_id"] = subset.get("product_id", default_none).to_list()
         return df

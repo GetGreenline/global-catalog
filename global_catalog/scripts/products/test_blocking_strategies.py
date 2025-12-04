@@ -20,6 +20,8 @@ from global_catalog.matching.products.blocking_v2 import (
     blocking_strategy_one,
     blocking_strategy_two,
     blocking_strategy_three,
+    blocking_strategy_four,
+    blocking_strategy_five,
     build_candidates,
 )
 
@@ -59,7 +61,14 @@ def main():
     ap.add_argument(
         "--strategy",
         default="strategy_one",
-        choices=["strategy_one", "strategy_two", "strategy_three", "all"],
+        choices=[
+            "strategy_one",
+            "strategy_two",
+            "strategy_three",
+            "strategy_four",
+            "strategy_five",
+            "all",
+        ],
         help="Which blocking strategy to execute. Use 'all' to run every strategy sequentially.",
     )
     ap.add_argument(
@@ -70,25 +79,25 @@ def main():
     ap.add_argument(
         "--threshold",
         type=float,
-        default=0.3,
+        default=0.5,
         help="Jaccard threshold for strategies 2 and 3.",
     )
     ap.add_argument(
         "--measure-tol",
         type=float,
-        default=0.2,
+        default=0.0,
         help="Relative tolerance for measure comparisons (e.g., 0.2 = 20%).",
     )
     ap.add_argument(
         "--max-per-left",
         type=int,
-        default=200,
+        default=50,
         help="Maximum candidate pairs per left record.",
     )
     ap.add_argument(
         "--window-size",
         type=int,
-        default=40,
+        default=25,
         help="Window size for sorted-neighborhood (strategy_three).",
     )
     ap.add_argument(
@@ -146,6 +155,8 @@ def main():
         "strategy_one": blocking_strategy_one,
         "strategy_two": blocking_strategy_two,
         "strategy_three": blocking_strategy_three,
+        "strategy_four": blocking_strategy_four,
+        "strategy_five": blocking_strategy_five,
     }
     selected = list(strategy_map.keys()) if args.strategy == "all" else [args.strategy]
     output_dir = Path(args.pairs_dir)
