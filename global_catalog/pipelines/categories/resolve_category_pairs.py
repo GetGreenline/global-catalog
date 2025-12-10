@@ -303,27 +303,29 @@ def global_category_id_map(cats_df: pd.DataFrame, resolution: pd.DataFrame) -> p
     cats["anchor_id"] = cats["id"].astype(str).apply(_find_anchor_id)
     cats["global_id"] = cats["anchor_id"].astype(str).apply(_uuid_from_hash)
 
-    winners = cats[cats["id"] == cats["anchor_id"]].copy()
+    # Include ALL categories in the mapping, not just winners
+    # This ensures dropped categories can still be looked up by their original category_id
+    all_cats = cats.copy()
 
-    winners["updated_at"] = pd.to_datetime(winners["updated_at"], errors="coerce")
+    all_cats["updated_at"] = pd.to_datetime(all_cats["updated_at"], errors="coerce")
     # Replace any remaining NaT values with current timestamp
-    nat_mask = pd.isna(winners["updated_at"])
+    nat_mask = pd.isna(all_cats["updated_at"])
     if nat_mask.any():
         current_time = pd.Timestamp.now()
-        winners.loc[nat_mask, "updated_at"] = current_time
-    winners.sort_values(["id", "updated_at"], ascending=[True, False], inplace=True)
-    winners = winners.drop_duplicates(subset=["id"], keep="first")
+        all_cats.loc[nat_mask, "updated_at"] = current_time
+    all_cats.sort_values(["id", "updated_at"], ascending=[True, False], inplace=True)
+    all_cats = all_cats.drop_duplicates(subset=["id"], keep="first")
 
-    winners["source"] = winners["source"].astype(str).str.strip().str.lower()
-    winners["category_id"] = (
-        winners["category_id"]
-        .astype(object).where(winners["category_id"].notna(), "")
+    all_cats["source"] = all_cats["source"].astype(str).str.strip().str.lower()
+    all_cats["category_id"] = (
+        all_cats["category_id"]
+        .astype(object).where(all_cats["category_id"].notna(), "")
         .astype(str).str.strip()
     )
-    winners.loc[winners["category_id"].str.lower().isin(["nan", "none"]), "category_id"] = ""
-    winners["country"] = winners["country"].astype(str).str.strip().str.upper()
-    out = winners[["global_id", "category_id", "source", "country", "updated_at"]].copy()
-    assert out["global_id"].is_unique, "global_id must be unique after winners-only selection."
+    all_cats.loc[all_cats["category_id"].str.lower().isin(["nan", "none"]), "category_id"] = ""
+    all_cats["country"] = all_cats["country"].astype(str).str.strip().str.upper()
+    out = all_cats[["global_id", "category_id", "source", "country", "updated_at"]].copy()
+    # Note: global_id is no longer unique since dropped categories share the same global_id as their winner
     # Note: load_timestamp column excluded from output parquet file
     return out[["global_id", "category_id", "source", "country", "updated_at"]]
 
