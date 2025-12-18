@@ -15,7 +15,8 @@ from global_catalog.matching.products.blocking_v2 import (
     blocking_strategy_five,
     build_candidates,
 )
-from global_catalog.matching.products.fuzzy_matcher_v2 import FuzzyMatcherConfig, run_fuzzy_matching
+from global_catalog.matching.products.fuzzy_matcher_v2 import FuzzyMatcherConfig
+from global_catalog.matching.products.fuzzy_matcher_v3 import run_fuzzy_matching_token_set
 
 
 class ProductPipeline(EntityPipeline):
@@ -29,7 +30,6 @@ class ProductPipeline(EntityPipeline):
         publisher_fn=None,
         snapshot_root: str = "data/snapshots/products",
         source_files: Optional[Dict[str, str]] = None,
-        brand_file: Optional[str] = "brands_w.csv",
         normalizer: Optional[ProductNormalizer] = None,
         blocking_config: Optional[BlockingConfig] = None,
         fuzzy_config: Optional[FuzzyMatcherConfig] = None,
@@ -44,7 +44,6 @@ class ProductPipeline(EntityPipeline):
             "hoodie": "products_hoodie.csv",
         }
         self.source_files = source_files or default_sources
-        self.brand_file = Path(brand_file) if brand_file else None
         self.blocking_config = blocking_config or BlockingConfig()
         self.blocking_strategy = self._resolve_blocking_strategy(self.blocking_config.strategy_name)
         self.fuzzy_config = fuzzy_config or FuzzyMatcherConfig()
@@ -54,15 +53,12 @@ class ProductPipeline(EntityPipeline):
         self.local_run = bool(local_run or cfg_use_local)
 
     def ingest(self) -> Dict[str, Any]:
-        """Load source datasets and auxiliary brand data from snapshots."""
+        """Load product source datasets from snapshots."""
         payload: Dict[str, pd.DataFrame] = {}
         for source, rel_path in self.source_files.items():
             csv_path = self._resolve_path(rel_path)
             payload[source] = self._load_products_snapshot(csv_path, source)
 
-        brand_df = self._load_brand_snapshot()
-        if brand_df is not None:
-            payload["brands"] = brand_df
         return payload
 
     def normalize(self, raw_data: Dict[str, Any]) -> pd.DataFrame:
@@ -70,7 +66,6 @@ class ProductPipeline(EntityPipeline):
         df = self.normalizer.process(
             hoodie_df=raw_data.get("hoodie"),
             weedmaps_df=raw_data.get("weedmaps"),
-            brand_df=raw_data.get("brands"),
         )
         df = self._ensure_blocking_columns(df)
         return df
@@ -84,9 +79,11 @@ class ProductPipeline(EntityPipeline):
         candidate_count = 0 if candidate_pairs is None else len(candidate_pairs)
         self.logger.info(f"Blocking produced {candidate_count} candidate pairs using {strategy_name}.")
 
-        self.logger.info("Running single-pass fuzzy matcher.")
-        fuzzy_matches = run_fuzzy_matching(normalized_data, candidate_pairs, self.fuzzy_config)
-        fuzzy_breakdown = {"matches": int(len(fuzzy_matches))}
+        self.logger.info("Running token-set fuzzy matcher.")
+        fuzzy_matches = run_fuzzy_matching_token_set(normalized_data, candidate_pairs, self.fuzzy_config)
+        breakdown: Dict[str, int] = {}
+        fuzzy_breakdown = dict(breakdown)
+        fuzzy_breakdown.setdefault("matches", int(len(fuzzy_matches)))
         self.logger.info(f"Fuzzy matcher retained {len(fuzzy_matches)} matches.")
 
         return {
@@ -129,18 +126,22 @@ class ProductPipeline(EntityPipeline):
     def _load_products_snapshot(self, path: Path, source_name: str) -> pd.DataFrame:
         if not path.exists():
             raise FileNotFoundError(f"Product snapshot not found: {path}")
-        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        try:
+            df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        except pd.errors.ParserError as exc:
+            self.logger.warning(
+                f"Failed to read {path} with default CSV parser ({exc}). Retrying while skipping bad lines."
+            )
+            df = pd.read_csv(
+                path,
+                dtype=str,
+                keep_default_na=False,
+                on_bad_lines="skip",
+                engine="python",
+            )
         if "source" not in df.columns:
             df["source"] = source_name
         return df
-
-    def _load_brand_snapshot(self) -> Optional[pd.DataFrame]:
-        if not self.brand_file:
-            return None
-        path = self._resolve_path(self.brand_file)
-        if not path.exists():
-            raise FileNotFoundError(f"Brand snapshot not found: {path}")
-        return pd.read_csv(path, dtype=str, keep_default_na=False)
 
     def _ensure_blocking_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Guarantee columns downstream blockers/matchers rely on are present."""
@@ -182,7 +183,7 @@ class ProductPipeline(EntityPipeline):
     def _matcher_name(self) -> str:
         matcher = getattr(self, "matcher", None)
         if matcher is None:
-            return "run_fuzzy_matching"
+            return "run_fuzzy_matching_token_set"
         name = getattr(matcher, "__name__", None)
         if name:
             return name

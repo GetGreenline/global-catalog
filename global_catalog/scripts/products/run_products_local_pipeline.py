@@ -19,7 +19,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hoodie", default="data/snapshots/products/products_hoodie.csv")
     ap.add_argument("--weedmaps", default="data/snapshots/products/products_weedmaps.csv")
-    ap.add_argument("--brands", default="data/snapshots/products/brands_w.csv")
     ap.add_argument("--out_root", default="data/matches/")
     ap.add_argument("--out", default="data/matches/products_pairs_tfidf_wo_description.parquet")
     ap.add_argument("--threshold", type=float, default=0.75)
@@ -38,10 +37,9 @@ def main():
 
     df_l = read_csv_flex(args.weedmaps)
     df_r = read_csv_flex(args.hoodie)
-    brand_df = read_csv_flex(args.brands) if args.brands else None
 
     normalizer = ProductNormalizer()
-    df_norm = normalizer.process(hoodie_df=df_r, weedmaps_df=df_l, brand_df=brand_df)
+    df_norm = normalizer.process(hoodie_df=df_r, weedmaps_df=df_l)
 
     pairs_df = build_product_blocking_pairs_multipass(
         df=df_norm,
@@ -76,4 +74,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

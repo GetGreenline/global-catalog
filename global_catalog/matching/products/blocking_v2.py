@@ -77,6 +77,8 @@ class BlockingConfig:
     large_brand_size_threshold: int = 750
     token_stopwords: Optional[List[str]] = None
     token_max_doc_freq: float = 0.5
+    left_source: str = "weedmaps"
+    right_source: str = "hoodie"
 
 
 def _safe_frame(df: Optional[pd.DataFrame]) -> pd.DataFrame:
@@ -97,7 +99,13 @@ def blocking_strategy_one(
         return _safe_frame(None)
 
     print("[blocking_v2] strategy_one: strict pass (measure match required)")
-    strict = _brand_blocking(df, enforce_uom=True, tag="strict_measure")
+    strict = _brand_blocking(
+        df,
+        enforce_uom=True,
+        tag="strict_measure",
+        left_source=cfg.left_source,
+        right_source=cfg.right_source,
+    )
     print(f"[blocking_v2] strategy_one: strict pass generated {len(strict)} pairs")
 
     if not cfg.lenient_measure_pass:
@@ -106,7 +114,13 @@ def blocking_strategy_one(
         return strict.reset_index(drop=True)
 
     print("[blocking_v2] strategy_one: lenient pass (allow missing measure)")
-    lenient = _brand_blocking(df, enforce_uom=False, tag="lenient_measure")
+    lenient = _brand_blocking(
+        df,
+        enforce_uom=False,
+        tag="lenient_measure",
+        left_source=cfg.left_source,
+        right_source=cfg.right_source,
+    )
     print(f"[blocking_v2] strategy_one: lenient pass generated {len(lenient)} pairs")
 
     out = pd.concat([strict, lenient], ignore_index=True)
@@ -172,7 +186,14 @@ def blocking_strategy_four(
     df = _attach_token_sets(df, cfg)
 
     print("[blocking_v2] strategy_four: strict pass (tokens + measure match)")
-    strict = _token_brand_blocking(df, cfg, strict=True, tag="strict_measure_token")
+    strict = _token_brand_blocking(
+        df,
+        cfg,
+        strict=True,
+        tag="strict_measure_token",
+        left_source=cfg.left_source,
+        right_source=cfg.right_source,
+    )
     print(f"[blocking_v2] strategy_four: strict pass generated {len(strict)} pairs")
 
     if not cfg.lenient_measure_pass:
@@ -180,7 +201,14 @@ def blocking_strategy_four(
         return strict.reset_index(drop=True)
 
     print("[blocking_v2] strategy_four: lenient pass (tokens + allow missing measure)")
-    lenient = _token_brand_blocking(df, cfg, strict=False, tag="lenient_measure_token")
+    lenient = _token_brand_blocking(
+        df,
+        cfg,
+        strict=False,
+        tag="lenient_measure_token",
+        left_source=cfg.left_source,
+        right_source=cfg.right_source,
+    )
     print(f"[blocking_v2] strategy_four: lenient pass generated {len(lenient)} pairs")
 
     out = pd.concat([strict, lenient], ignore_index=True)
@@ -203,7 +231,14 @@ def blocking_strategy_five(
     df = _attach_token_sets(df, cfg)
 
     print("[blocking_v2] strategy_five: strict pass (token index + measure match)")
-    strict = _token_index_brand_blocking(df, cfg, strict=True, tag="strict_measure_token_index")
+    strict = _token_index_brand_blocking(
+        df,
+        cfg,
+        strict=True,
+        tag="strict_measure_token_index",
+        left_source=cfg.left_source,
+        right_source=cfg.right_source,
+    )
     print(f"[blocking_v2] strategy_five: strict pass generated {len(strict)} pairs")
 
     if not cfg.lenient_measure_pass:
@@ -211,7 +246,14 @@ def blocking_strategy_five(
         return strict.reset_index(drop=True)
 
     print("[blocking_v2] strategy_five: lenient pass (token index + allow missing measure)")
-    lenient = _token_index_brand_blocking(df, cfg, strict=False, tag="lenient_measure_token_index")
+    lenient = _token_index_brand_blocking(
+        df,
+        cfg,
+        strict=False,
+        tag="lenient_measure_token_index",
+        left_source=cfg.left_source,
+        right_source=cfg.right_source,
+    )
     print(f"[blocking_v2] strategy_five: lenient pass generated {len(lenient)} pairs")
 
     out = pd.concat([strict, lenient], ignore_index=True)
@@ -254,7 +296,36 @@ def _prep_sources(df: Optional[pd.DataFrame]) -> pd.DataFrame:
     return df.copy()
 
 
-def _brand_blocking(df: pd.DataFrame, enforce_uom: bool, tag: str) -> pd.DataFrame:
+def _source_label(frame: pd.DataFrame) -> str:
+    if frame.empty or "source" not in frame.columns:
+        return ""
+    return str(frame["source"].iloc[0]).strip().lower()
+
+
+def _orient_source_pair(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    left_source: str,
+    right_source: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    target_left = (left_source or "").strip().lower()
+    target_right = (right_source or "").strip().lower()
+    left_name = _source_label(left)
+    right_name = _source_label(right)
+    if target_left and left_name != target_left and right_name == target_left:
+        return right, left
+    if target_right and left_name == target_right and right_name != target_right:
+        return right, left
+    return left, right
+
+
+def _brand_blocking(
+    df: pd.DataFrame,
+    enforce_uom: bool,
+    tag: str,
+    left_source: str = "weedmaps",
+    right_source: str = "hoodie",
+) -> pd.DataFrame:
     rows = []
     grouped = df[df["brand_name_norm"].astype(str).str.strip().ne("")]
     if grouped.empty:
@@ -270,6 +341,7 @@ def _brand_blocking(df: pd.DataFrame, enforce_uom: bool, tag: str) -> pd.DataFra
             right = group[group["source"] == src_right]
             if left.empty or right.empty:
                 continue
+            left, right = _orient_source_pair(left, right, left_source, right_source)
             for li in left.index:
                 for rj in right.index:
                     m_left = _measure_key(left.at[li, "measure_mg"])
@@ -347,7 +419,14 @@ def _token_overlap_threshold(cfg: BlockingConfig, brand_size: int) -> int:
     return max(1, cfg.token_overlap_min)
 
 
-def _token_brand_blocking(df: pd.DataFrame, cfg: BlockingConfig, strict: bool, tag: str) -> pd.DataFrame:
+def _token_brand_blocking(
+    df: pd.DataFrame,
+    cfg: BlockingConfig,
+    strict: bool,
+    tag: str,
+    left_source: str = "weedmaps",
+    right_source: str = "hoodie",
+) -> pd.DataFrame:
     rows = []
     grouped = df[df["brand_name_norm"].astype(str).str.strip().ne("")]
     if grouped.empty:
@@ -363,6 +442,7 @@ def _token_brand_blocking(df: pd.DataFrame, cfg: BlockingConfig, strict: bool, t
             right = group[group["source"] == src_right]
             if left.empty or right.empty:
                 continue
+            left, right = _orient_source_pair(left, right, left_source, right_source)
             for li in left.index:
                 tokens_left = left.at[li, "_token_set"]
                 if not tokens_left:
@@ -386,7 +466,14 @@ def _token_brand_blocking(df: pd.DataFrame, cfg: BlockingConfig, strict: bool, t
     return pd.DataFrame(rows)
 
 
-def _token_index_brand_blocking(df: pd.DataFrame, cfg: BlockingConfig, strict: bool, tag: str) -> pd.DataFrame:
+def _token_index_brand_blocking(
+    df: pd.DataFrame,
+    cfg: BlockingConfig,
+    strict: bool,
+    tag: str,
+    left_source: str = "weedmaps",
+    right_source: str = "hoodie",
+) -> pd.DataFrame:
     rows = []
     grouped = df[df["brand_name_norm"].astype(str).str.strip().ne("")]
     if grouped.empty:
@@ -402,6 +489,7 @@ def _token_index_brand_blocking(df: pd.DataFrame, cfg: BlockingConfig, strict: b
             right = group[group["source"] == src_right]
             if left.empty or right.empty:
                 continue
+            left, right = _orient_source_pair(left, right, left_source, right_source)
             index, right_token_map = _build_token_index(right, cfg.token_max_doc_freq)
             if not index:
                 continue
