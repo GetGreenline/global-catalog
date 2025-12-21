@@ -5,6 +5,7 @@ from global_catalog.matching.products.blocking_v2 import BlockingConfig
 from global_catalog.matching.products.fuzzy_matcher_v2 import FuzzyMatcherConfig
 from global_catalog.pipelines.products.product_pipeline import ProductPipeline
 from global_catalog.pipelines.products.product_resolver import ProductMatchResolver
+from global_catalog.matching.products.transformer_matcher import TransformerMatcher, TransformerMatcherConfig
 
 
 def parse_args():
@@ -32,6 +33,40 @@ def parse_args():
         default="artifacts/products/pairs",
         help="Directory to read/write cached candidate pair parquet files.",
     )
+    parser.add_argument(
+        "--matcher",
+        default="fuzzy",
+        choices=["fuzzy", "transformer"],
+        help="Which matcher to use after blocking.",
+    )
+    parser.add_argument(
+        "--model-name",
+        default="BAAI/bge-small-en-v1.5",
+        help="SentenceTransformer model to use when --matcher=transformer.",
+    )
+    parser.add_argument(
+        "--transformer-threshold",
+        type=float,
+        default=0.7,
+        help="Similarity threshold for transformer matcher.",
+    )
+    parser.add_argument(
+        "--transformer-batch-size",
+        type=int,
+        default=64,
+        help="Batch size for encoding text in the transformer matcher.",
+    )
+    parser.add_argument(
+        "--max-desc-tokens",
+        type=int,
+        default=128,
+        help="Maximum number of description tokens to include in transformer inputs.",
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Device for transformer inference (e.g., 'cpu', 'cuda', 'cuda:0').",
+    )
     return parser.parse_args()
 
 
@@ -51,12 +86,24 @@ def main():
         threshold=args.match_threshold,
     )
 
+    matcher = None
+    if args.matcher == "transformer":
+        transformer_cfg = TransformerMatcherConfig(
+            model_name=args.model_name,
+            batch_size=args.transformer_batch_size,
+            device=args.device,
+            threshold=args.transformer_threshold,
+            max_desc_tokens=args.max_desc_tokens,
+        )
+        matcher = TransformerMatcher(cfg=transformer_cfg)
+
     run_label = "strict" if args.strict_measure_only else "lenient"
     pipeline = ProductPipeline(
         repo=object(),
         snapshot_root=args.snapshot_root,
         blocking_config=blocking_cfg,
         fuzzy_config=fuzzy_cfg,
+        matcher=matcher,
         resolver=ProductMatchResolver(out_root=args.out_root, run_label=run_label),
         pairs_cache_dir=args.pairs_dir,
         local_run=args.use_local_pairs,

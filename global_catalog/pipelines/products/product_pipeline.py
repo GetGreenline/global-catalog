@@ -17,6 +17,7 @@ from global_catalog.matching.products.blocking_v2 import (
 )
 from global_catalog.matching.products.fuzzy_matcher_v2 import FuzzyMatcherConfig
 from global_catalog.matching.products.fuzzy_matcher_v3 import run_fuzzy_matching_token_set
+from global_catalog.matching.products.transformer_matcher import TransformerMatcher
 
 
 class ProductPipeline(EntityPipeline):
@@ -33,7 +34,7 @@ class ProductPipeline(EntityPipeline):
         normalizer: Optional[ProductNormalizer] = None,
         blocking_config: Optional[BlockingConfig] = None,
         fuzzy_config: Optional[FuzzyMatcherConfig] = None,
-        local_run: bool = True,
+        local_run: bool = False,
         pairs_cache_dir: Optional[str] = "artifacts/products/pairs",
     ):
         super().__init__(repo=repo, matcher=matcher, resolver=resolver, publisher_fn=publisher_fn)
@@ -50,7 +51,8 @@ class ProductPipeline(EntityPipeline):
         cfg_pairs_dir = self.blocking_config.pairs_dir or pairs_cache_dir
         self.pairs_cache_dir = Path(cfg_pairs_dir) if cfg_pairs_dir else None
         cfg_use_local = getattr(self.blocking_config, "use_local_pairs", False)
-        self.local_run = bool(local_run or cfg_use_local)
+        # Only use cached pairs when explicitly requested via both the pipeline flag and the config flag.
+        self.local_run = bool(local_run and cfg_use_local)
 
     def ingest(self) -> Dict[str, Any]:
         """Load product source datasets from snapshots."""
@@ -79,19 +81,18 @@ class ProductPipeline(EntityPipeline):
         candidate_count = 0 if candidate_pairs is None else len(candidate_pairs)
         self.logger.info(f"Blocking produced {candidate_count} candidate pairs using {strategy_name}.")
 
-        self.logger.info("Running token-set fuzzy matcher.")
-        fuzzy_matches = run_fuzzy_matching_token_set(normalized_data, candidate_pairs, self.fuzzy_config)
+        matches = self._run_matcher(normalized_data, candidate_pairs)
         breakdown: Dict[str, int] = {}
         fuzzy_breakdown = dict(breakdown)
-        fuzzy_breakdown.setdefault("matches", int(len(fuzzy_matches)))
-        self.logger.info(f"Fuzzy matcher retained {len(fuzzy_matches)} matches.")
+        fuzzy_breakdown.setdefault("matches", int(len(matches)))
+        self.logger.info(f"Matcher retained {len(matches)} matches using {matcher_name}.")
 
         return {
-            "pairs": fuzzy_matches,
+            "pairs": matches,
             "candidate_pairs": candidate_pairs,
             "metrics": {
                 "blocking": blocking_metrics,
-                "fuzzy_pairs": int(len(fuzzy_matches)),
+                "fuzzy_pairs": int(len(matches)),
                 "fuzzy_breakdown": fuzzy_breakdown,
             },
             "blocking_strategy": strategy_name,
@@ -111,6 +112,14 @@ class ProductPipeline(EntityPipeline):
         if callable(resolver_fn):
             return resolver_fn(match_results, raw_data, normalized_data)
         raise ValueError("Resolver must provide a callable `resolve` method.")
+
+    def _run_matcher(self, normalized_data: Any, candidate_pairs: Any):
+        """Dispatch to configured matcher or default fuzzy matcher."""
+        if isinstance(self.matcher, TransformerMatcher):
+            return self.matcher(normalized_data, candidate_pairs, None)
+        if callable(self.matcher):
+            return self.matcher(normalized_data, candidate_pairs, getattr(self, "fuzzy_config", None))
+        return run_fuzzy_matching_token_set(normalized_data, candidate_pairs, self.fuzzy_config)
 
     def _resolve_path(self, rel_path: str | Path) -> Path:
         """Resolve user-supplied paths, supporting absolute or repo-relative inputs."""
@@ -195,12 +204,12 @@ class ProductPipeline(EntityPipeline):
     def _resolve_candidate_pairs(
         self, strategy_name: str, normalized_data: pd.DataFrame
     ) -> tuple[Optional[pd.DataFrame], Dict[str, Any]]:
-        if self.local_run:
+        if self.local_run and self.pairs_cache_dir is not None:
             cached_pairs, cached_metrics = self._load_cached_pairs(strategy_name)
             if cached_pairs is not None:
                 self.logger.info(f"Using cached candidate pairs for {strategy_name}.")
                 return cached_pairs, cached_metrics
-        self.logger.info(f"No cached pairs found; running blocking strategy {strategy_name}.")
+        self.logger.info(f"No cached pairs used; running blocking strategy {strategy_name}.")
         blocking_out = build_candidates(normalized_data, self.blocking_config, self.blocking_strategy)
         return blocking_out.get("pairs"), blocking_out.get("metrics", {})
 

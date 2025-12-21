@@ -13,3 +13,7 @@ matplotlib~=3.10.7
 seaborn~=0.13.2
 pyarrow~=20.0.0
 ipython~=9.6.0
+
+# Transformer-based matching experiments
+sentence-transformers~=2.7.0
+hnswlib~=0.8.0
