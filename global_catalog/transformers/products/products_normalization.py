@@ -379,9 +379,17 @@ class ProductNormalizer:
         out = self._ensure_cols(df.copy(), "weedmaps")
         if "brand_name" not in out.columns:
             out["brand_name"] = np.nan
-        out["brand_name"] = out["brand_name"].replace(r"^\s*$", np.nan, regex=True)
+        out["brand_name"] = (
+            out["brand_name"]
+            .replace(r"^\s*$", np.nan, regex=True)
+            .infer_objects(copy=False)
+        )
         if "brand_name_resolved" in out.columns:
-            resolved = out["brand_name_resolved"].replace(r"^\s*$", np.nan, regex=True)
+            resolved = (
+                out["brand_name_resolved"]
+                .replace(r"^\s*$", np.nan, regex=True)
+                .infer_objects(copy=False)
+            )
             out["brand_name"] = resolved.combine_first(out["brand_name"])
 
         if "product_variant_weight_converted_mg" in out.columns:

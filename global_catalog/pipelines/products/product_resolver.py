@@ -13,9 +13,23 @@ from global_catalog.pipelines.common import new_run_id, prepare_run_dir
 class ProductMatchResolver:
     """Persist product matching in artifacts for initial result analysis"""
 
-    def __init__(self, out_root: str = "artifacts/products", run_label: str | None = None):
+    TEXT_DESC_MAX_CHARS = 1000
+
+    def __init__(
+        self,
+        out_root: str = "artifacts/products",
+        run_label: str | None = None,
+        write_candidates: bool = True,
+        include_candidate_context: bool = True,
+        write_resolved_csv: bool = True,
+        max_csv_rows: int | None = None,
+    ):
         self.out_root = Path(out_root)
         self.run_label = run_label
+        self.write_candidates = write_candidates
+        self.include_candidate_context = include_candidate_context
+        self.write_resolved_csv = write_resolved_csv
+        self.max_csv_rows = max_csv_rows
 
     def resolve(
         self,
@@ -23,18 +37,15 @@ class ProductMatchResolver:
         raw_data: Dict[str, Any],
         normalized_data: pd.DataFrame,
     ) -> Dict[str, Any]:
-        tag_parts = ["products"]
-        if self.run_label:
-            tag_parts.append(self._slug(self.run_label))
         strategy_name = match_results.get("blocking_strategy") if match_results else None
         matcher_name = match_results.get("matcher_name") if match_results else None
-        if strategy_name:
-            tag_parts.append(self._slug(strategy_name))
-        if matcher_name:
-            tag_parts.append(self._slug(matcher_name))
-        tag = "_".join(tag_parts)
-        run_id = new_run_id(tag)
-        run_dir = prepare_run_dir(str(self.out_root), run_id)
+        run_id = match_results.get("run_id") if match_results else None
+        run_dir = match_results.get("run_dir") if match_results else None
+        if run_dir:
+            run_dir = Path(run_dir)
+            run_dir.mkdir(parents=True, exist_ok=True)
+        if not run_id or run_dir is None:
+            run_id, run_dir = self.prepare_run_dir(strategy_name, matcher_name)
 
         pairs_df = match_results.get("pairs")
         if pairs_df is None:
@@ -45,7 +56,8 @@ class ProductMatchResolver:
         metrics = match_results.get("metrics") or {}
 
         pairs_df = self._attach_context_columns(pairs_df, normalized_data)
-        candidate_df = self._attach_context_columns(candidate_df, normalized_data)
+        if self.write_candidates and self.include_candidate_context:
+            candidate_df = self._attach_context_columns(candidate_df, normalized_data)
 
         resolved_df = self._resolve_one_to_one(pairs_df, raw_data)
 
@@ -56,25 +68,47 @@ class ProductMatchResolver:
         resolved_csv_path = run_dir / "resolved_pairs.csv"
 
         pairs_df.to_parquet(pairs_path, index=False)
-        candidate_df.to_parquet(candidates_path, index=False)
+        if self.write_candidates:
+            candidate_df.to_parquet(candidates_path, index=False)
         metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         resolved_df.to_parquet(resolved_parquet_path, index=False)
-        resolved_df.to_csv(resolved_csv_path, index=False)
+        write_csv = self.write_resolved_csv
+        if write_csv and self.max_csv_rows is not None:
+            write_csv = len(resolved_df) <= self.max_csv_rows
+        if write_csv:
+            resolved_df.to_csv(resolved_csv_path, index=False)
 
         print(f"[ProductMatchResolver] Wrote pairs to {pairs_path}")
-        print(f"[ProductMatchResolver] Wrote candidate pairs to {candidates_path}")
+        if self.write_candidates:
+            print(f"[ProductMatchResolver] Wrote candidate pairs to {candidates_path}")
         print(f"[ProductMatchResolver] Wrote metrics to {metrics_path}")
-        print(f"[ProductMatchResolver] Wrote resolved 1:1 pairs to {resolved_parquet_path} and {resolved_csv_path}")
+        if write_csv:
+            print(f"[ProductMatchResolver] Wrote resolved 1:1 pairs to {resolved_parquet_path} and {resolved_csv_path}")
+        else:
+            print(f"[ProductMatchResolver] Wrote resolved 1:1 pairs to {resolved_parquet_path}")
 
         return {
             "run_id": run_id,
             "run_dir": str(run_dir),
             "pairs_path": str(pairs_path),
-            "candidate_pairs_path": str(candidates_path),
+            "candidate_pairs_path": str(candidates_path) if self.write_candidates else None,
             "metrics_path": str(metrics_path),
             "resolved_pairs_path": str(resolved_parquet_path),
-            "resolved_pairs_csv": str(resolved_csv_path),
+            "resolved_pairs_csv": str(resolved_csv_path) if write_csv else None,
         }
+
+    def prepare_run_dir(self, strategy_name: str | None, matcher_name: str | None) -> tuple[str, Path]:
+        tag_parts = ["products"]
+        if self.run_label:
+            tag_parts.append(self._slug(self.run_label))
+        if strategy_name:
+            tag_parts.append(self._slug(strategy_name))
+        if matcher_name:
+            tag_parts.append(self._slug(matcher_name))
+        tag = "_".join(tag_parts)
+        run_id = new_run_id(tag)
+        run_dir = prepare_run_dir(str(self.out_root), run_id)
+        return run_id, run_dir
 
     def _slug(self, value: str) -> str:
         text = str(value).strip().lower()
@@ -89,14 +123,50 @@ class ProductMatchResolver:
             idx_col = f"{prefix}_index"
             if idx_col not in df.columns:
                 continue
-            idx_values = df[idx_col].astype(int)
-            subset = normalized_data.loc[idx_values]
-            default_none = pd.Series([None] * len(subset), index=subset.index)
-            default_empty = pd.Series([""] * len(subset), index=subset.index)
-            df[f"{prefix}_measure_mg"] = subset.get("measure_mg", default_none).to_list()
-            df[f"{prefix}_description_norm"] = subset.get("description_norm", default_empty).to_list()
-            df[f"{prefix}_product_id"] = subset.get("product_id", default_none).to_list()
+            idx_values = df[idx_col].astype(int).to_numpy()
+            subset = normalized_data.iloc[idx_values]
+            if "measure_mg" in subset.columns:
+                df[f"{prefix}_measure_mg"] = subset["measure_mg"].to_numpy(copy=False)
+            else:
+                df[f"{prefix}_measure_mg"] = [None] * len(subset)
+            if "description_norm" in subset.columns:
+                df[f"{prefix}_description_norm"] = subset["description_norm"].to_numpy(copy=False)
+            else:
+                df[f"{prefix}_description_norm"] = [""] * len(subset)
+            if "product_id" in subset.columns:
+                df[f"{prefix}_product_id"] = subset["product_id"].to_numpy(copy=False)
+            else:
+                df[f"{prefix}_product_id"] = [None] * len(subset)
+            suffix = "w" if prefix == "left" else "h"
+            df[f"text_{suffix}"] = self._build_text_series(subset).to_numpy(copy=False)
         return df
+
+    def _build_text_series(self, subset: pd.DataFrame) -> pd.Series:
+        default_empty = pd.Series([""] * len(subset), index=subset.index)
+        brand = self._clean_series(subset.get("brand_name_norm", default_empty))
+        name = self._clean_series(subset.get("product_name_norm", default_empty))
+        measure = self._clean_series(subset.get("measure_mg", default_empty))
+        uom = self._clean_series(subset.get("uom_norm", default_empty))
+        desc = self._clean_series(subset.get("description_norm", default_empty))
+
+        if self.TEXT_DESC_MAX_CHARS and self.TEXT_DESC_MAX_CHARS > 0:
+            desc = desc.str.slice(0, self.TEXT_DESC_MAX_CHARS)
+
+        base = (brand + " " + name + " " + measure + " " + uom).str.replace(r"\s+", " ", regex=True).str.strip()
+        desc = desc.str.replace(r"\s+", " ", regex=True).str.strip()
+
+        text = base.copy()
+        has_desc = desc != ""
+        has_base = base != ""
+        text[has_desc & has_base] = base[has_desc & has_base] + " || " + desc[has_desc & has_base]
+        text[has_desc & ~has_base] = desc[has_desc & ~has_base]
+        return text
+
+    @staticmethod
+    def _clean_series(series: pd.Series) -> pd.Series:
+        out = series.fillna("").astype(str)
+        lower = out.str.lower()
+        return out.where(~lower.isin({"nan", "none", "null"}), "")
 
     # --- Resolution helpers -------------------------------------------------
 

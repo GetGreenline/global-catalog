@@ -8,12 +8,17 @@ This module mirrors the fuzzy matcher contract so it can be swapped into
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def _empty_matches() -> pd.DataFrame:
@@ -46,6 +51,9 @@ class TransformerMatcherConfig:
     threshold: float = 0.7
     use_fp16: bool = True
     cache_dir: str = "artifacts/products/embeddings"
+    show_progress_bar: bool = True
+    pair_chunk_size: int = 10000
+    chunk_output_dir: Optional[str] = None
 
 
 class TransformerMatcher:
@@ -62,6 +70,11 @@ class TransformerMatcher:
             return _empty_matches()
 
         cfg = cfg or self.cfg
+        logger.info(
+            "TransformerMatcher: scoring %d candidate pairs with model %s",
+            len(pairs_df),
+            cfg.model_name,
+        )
         name_col = "product_name_norm" if "product_name_norm" in df_norm.columns else "normalized_product_name"
         desc_col = "description_norm" if "description_norm" in df_norm.columns else "description"
         brand_col = "brand_name_norm" if "brand_name_norm" in df_norm.columns else "brand_name"
@@ -79,32 +92,74 @@ class TransformerMatcher:
         if not left_pos:
             return _empty_matches()
 
-        sims = self._pair_similarities(embeddings, left_pos, right_pos)
+        total_pairs = len(left_pos)
+        chunk_size = cfg.pair_chunk_size or total_pairs
+        if chunk_size <= 0:
+            chunk_size = total_pairs
+        chunk_output_dir = Path(cfg.chunk_output_dir) if cfg.chunk_output_dir else None
+        if chunk_output_dir:
+            chunk_output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("TransformerMatcher: writing chunk outputs to %s", chunk_output_dir)
 
-        records = []
-        for lp, rp, li, rj, sim in zip(left_pos, right_pos, left_idx_out, right_idx_out, sims):
-            if sim < cfg.threshold:
-                continue
-            records.append(
-                {
-                    "left_index": int(li),
-                    "right_index": int(rj),
-                    "left_source": sources[lp],
-                    "right_source": sources[rp],
-                    "left_product_name": names[lp],
-                    "right_product_name": names[rp],
-                    "left_brand_name": brands[lp],
-                    "right_brand_name": brands[rp],
-                    "similarity": float(sim),
-                    "name_score": float(sim),  # compatibility with fuzzy matcher output
-                    "match_type": "transformer_bge",
+        records_list = []
+        for chunk_index, start in enumerate(range(0, total_pairs, chunk_size)):
+            end = min(start + chunk_size, total_pairs)
+            chunk_left = left_pos[start:end]
+            chunk_right = right_pos[start:end]
+            chunk_left_idx = left_idx_out[start:end]
+            chunk_right_idx = right_idx_out[start:end]
+            chunk_sims = self._pair_similarities(embeddings, chunk_left, chunk_right)
+
+            chunk_records = []
+            for lp, rp, li, rj, sim in zip(chunk_left, chunk_right, chunk_left_idx, chunk_right_idx, chunk_sims):
+                if sim < cfg.threshold:
+                    continue
+                chunk_records.append(
+                    {
+                        "left_index": int(li),
+                        "right_index": int(rj),
+                        "left_source": sources[lp],
+                        "right_source": sources[rp],
+                        "left_product_name": names[lp],
+                        "right_product_name": names[rp],
+                        "left_brand_name": brands[lp],
+                        "right_brand_name": brands[rp],
+                        "similarity": float(sim),
+                        "name_score": float(sim),  # compatibility with fuzzy matcher output
+                        "match_type": "transformer_bge",
+                    }
+                )
+
+            if chunk_output_dir:
+                chunk_df = pd.DataFrame(chunk_records) if chunk_records else _empty_matches()
+                chunk_path = chunk_output_dir / f"pairs_chunk_{chunk_index:05d}.parquet"
+                chunk_df.to_parquet(chunk_path, index=False)
+                metrics = {
+                    "chunk_index": chunk_index,
+                    "pairs_scored": int(end - start),
+                    "matches_kept": int(len(chunk_records)),
+                    "threshold": float(cfg.threshold),
                 }
-            )
+                metrics_path = chunk_output_dir / f"metrics_chunk_{chunk_index:05d}.json"
+                metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+                logger.info(
+                    "TransformerMatcher: chunk %d scored %d pairs, kept %d matches",
+                    chunk_index,
+                    int(end - start),
+                    int(len(chunk_records)),
+                )
 
-        if not records:
+            if chunk_records:
+                records_list.append(pd.DataFrame(chunk_records))
+
+        if not records_list:
             return _empty_matches()
 
-        return pd.DataFrame(records).sort_values("similarity", ascending=False).reset_index(drop=True)
+        return (
+            pd.concat(records_list, ignore_index=True)
+            .sort_values("similarity", ascending=False)
+            .reset_index(drop=True)
+        )
 
     # --- Embedding helpers ---------------------------------------------
 
@@ -135,13 +190,18 @@ class TransformerMatcher:
     ) -> Tuple[np.ndarray, Dict[Any, int]]:
         cache_path = self._cache_path(text_series, cfg)
         if cache_path is not None and cache_path.exists():
+            logger.info("TransformerMatcher: loading cached embeddings from %s", cache_path)
             data = np.load(cache_path, allow_pickle=False)
             embeddings = data
         else:
+            logger.info("TransformerMatcher: encoding %d texts", len(text_series))
+            t0 = time.perf_counter()
             embeddings = self._encode(text_series, cfg)
+            logger.info("TransformerMatcher: encoding completed in %.2fs", time.perf_counter() - t0)
             if cache_path is not None:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 np.save(cache_path, embeddings, allow_pickle=False)
+                logger.info("TransformerMatcher: saved embeddings cache to %s", cache_path)
 
         idx_to_pos = {idx: pos for pos, idx in enumerate(text_series.index)}
         return embeddings, idx_to_pos
@@ -150,12 +210,18 @@ class TransformerMatcher:
         model = self._load_model(cfg)
         import torch
 
+        logger.info(
+            "TransformerMatcher: running encode batch_size=%s device=%s",
+            cfg.batch_size,
+            cfg.device,
+        )
         tensor = model.encode(
             text_series.tolist(),
             batch_size=cfg.batch_size,
             device=cfg.device,
             convert_to_tensor=True,
             normalize_embeddings=False,
+            show_progress_bar=cfg.show_progress_bar,
         )
         dtype = torch.float16 if cfg.use_fp16 else torch.float32
         embeddings = tensor.to(dtype).cpu().numpy()

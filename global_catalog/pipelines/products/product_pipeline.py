@@ -18,6 +18,7 @@ from global_catalog.matching.products.blocking_v2 import (
 from global_catalog.matching.products.fuzzy_matcher_v2 import FuzzyMatcherConfig
 from global_catalog.matching.products.fuzzy_matcher_v3 import run_fuzzy_matching_token_set
 from global_catalog.matching.products.transformer_matcher import TransformerMatcher
+from global_catalog.matching.products.cross_encoder_matcher import CrossEncoderMatcher
 
 
 class ProductPipeline(EntityPipeline):
@@ -81,7 +82,19 @@ class ProductPipeline(EntityPipeline):
         candidate_count = 0 if candidate_pairs is None else len(candidate_pairs)
         self.logger.info(f"Blocking produced {candidate_count} candidate pairs using {strategy_name}.")
 
-        matches = self._run_matcher(normalized_data, candidate_pairs)
+        run_id = None
+        run_dir = None
+        matcher_cfg = getattr(self.matcher, "cfg", None)
+        if matcher_cfg is not None:
+            pair_chunk_size = getattr(matcher_cfg, "pair_chunk_size", 0)
+            chunk_output_dir = getattr(matcher_cfg, "chunk_output_dir", None)
+            if pair_chunk_size and not chunk_output_dir:
+                prepare_fn = getattr(self.resolver, "prepare_run_dir", None)
+                if callable(prepare_fn):
+                    run_id, run_dir = prepare_fn(strategy_name, matcher_name)
+                    matcher_cfg.chunk_output_dir = str(Path(run_dir) / "chunks")
+
+        matches = self._run_matcher(normalized_data, candidate_pairs, raw_data)
         breakdown: Dict[str, int] = {}
         fuzzy_breakdown = dict(breakdown)
         fuzzy_breakdown.setdefault("matches", int(len(matches)))
@@ -97,6 +110,8 @@ class ProductPipeline(EntityPipeline):
             },
             "blocking_strategy": strategy_name,
             "matcher_name": matcher_name,
+            "run_id": run_id,
+            "run_dir": str(run_dir) if run_dir else None,
         }
 
     def resolve(
@@ -113,8 +128,10 @@ class ProductPipeline(EntityPipeline):
             return resolver_fn(match_results, raw_data, normalized_data)
         raise ValueError("Resolver must provide a callable `resolve` method.")
 
-    def _run_matcher(self, normalized_data: Any, candidate_pairs: Any):
+    def _run_matcher(self, normalized_data: Any, candidate_pairs: Any, raw_data: Optional[Dict[str, Any]] = None):
         """Dispatch to configured matcher or default fuzzy matcher."""
+        if isinstance(self.matcher, CrossEncoderMatcher):
+            return self.matcher(normalized_data, candidate_pairs, raw_data=raw_data)
         if isinstance(self.matcher, TransformerMatcher):
             return self.matcher(normalized_data, candidate_pairs, None)
         if callable(self.matcher):
@@ -136,18 +153,14 @@ class ProductPipeline(EntityPipeline):
         if not path.exists():
             raise FileNotFoundError(f"Product snapshot not found: {path}")
         try:
+            df = pd.read_csv(path, dtype=str, keep_default_na=False, on_bad_lines="skip")
+        except TypeError:
             df = pd.read_csv(path, dtype=str, keep_default_na=False)
         except pd.errors.ParserError as exc:
-            self.logger.warning(
+            self.logger.info(
                 f"Failed to read {path} with default CSV parser ({exc}). Retrying while skipping bad lines."
             )
-            df = pd.read_csv(
-                path,
-                dtype=str,
-                keep_default_na=False,
-                on_bad_lines="skip",
-                engine="python",
-            )
+            df = pd.read_csv(path, dtype=str, keep_default_na=False, on_bad_lines="skip", engine="python")
         if "source" not in df.columns:
             df["source"] = source_name
         return df
