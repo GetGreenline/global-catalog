@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import pandas as pd
 
@@ -13,9 +13,15 @@ from global_catalog.pipelines.common import new_run_id, prepare_run_dir
 class ProductMatchResolver:
     """Persist product matching in artifacts for initial result analysis"""
 
-    def __init__(self, out_root: str = "artifacts/products", run_label: str | None = None):
+    def __init__(
+        self,
+        out_root: str = "artifacts/products",
+        run_label: str | None = None,
+        skip_candidate_pairs: bool = False,
+    ):
         self.out_root = Path(out_root)
         self.run_label = run_label
+        self.skip_candidate_pairs = skip_candidate_pairs
 
     def resolve(
         self,
@@ -40,14 +46,17 @@ class ProductMatchResolver:
         if pairs_df is None:
             pairs_df = pd.DataFrame()
         candidate_df = match_results.get("candidate_pairs")
-        if candidate_df is None:
+        if candidate_df is None or self.skip_candidate_pairs:
             candidate_df = pd.DataFrame()
         metrics = match_results.get("metrics") or {}
 
         pairs_df = self._attach_context_columns(pairs_df, normalized_data)
-        candidate_df = self._attach_context_columns(candidate_df, normalized_data)
+        if not self.skip_candidate_pairs:
+            candidate_df = self._attach_context_columns(candidate_df, normalized_data)
 
         resolved_df = self._resolve_one_to_one(pairs_df, raw_data)
+        resolved_df = self._normalize_id_columns(resolved_df)
+        resolved_df = self._normalize_object_columns(resolved_df)
 
         pairs_path = run_dir / "pairs.parquet"
         candidates_path = run_dir / "candidate_pairs.parquet"
@@ -56,13 +65,15 @@ class ProductMatchResolver:
         resolved_csv_path = run_dir / "resolved_pairs.csv"
 
         pairs_df.to_parquet(pairs_path, index=False)
-        candidate_df.to_parquet(candidates_path, index=False)
+        if not self.skip_candidate_pairs:
+            candidate_df.to_parquet(candidates_path, index=False)
         metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         resolved_df.to_parquet(resolved_parquet_path, index=False)
         resolved_df.to_csv(resolved_csv_path, index=False)
 
         print(f"[ProductMatchResolver] Wrote pairs to {pairs_path}")
-        print(f"[ProductMatchResolver] Wrote candidate pairs to {candidates_path}")
+        if not self.skip_candidate_pairs:
+            print(f"[ProductMatchResolver] Wrote candidate pairs to {candidates_path}")
         print(f"[ProductMatchResolver] Wrote metrics to {metrics_path}")
         print(f"[ProductMatchResolver] Wrote resolved 1:1 pairs to {resolved_parquet_path} and {resolved_csv_path}")
 
@@ -70,7 +81,7 @@ class ProductMatchResolver:
             "run_id": run_id,
             "run_dir": str(run_dir),
             "pairs_path": str(pairs_path),
-            "candidate_pairs_path": str(candidates_path),
+            "candidate_pairs_path": None if self.skip_candidate_pairs else str(candidates_path),
             "metrics_path": str(metrics_path),
             "resolved_pairs_path": str(resolved_parquet_path),
             "resolved_pairs_csv": str(resolved_csv_path),
@@ -93,9 +104,15 @@ class ProductMatchResolver:
             subset = normalized_data.loc[idx_values]
             default_none = pd.Series([None] * len(subset), index=subset.index)
             default_empty = pd.Series([""] * len(subset), index=subset.index)
-            df[f"{prefix}_measure_mg"] = subset.get("measure_mg", default_none).to_list()
+            df[f"{prefix}_measure_mg"] = self._normalize_measure_context(subset.get("measure_mg", default_none))
+            df[f"{prefix}_measure_mg_int"] = self._normalize_measure_int_context(
+                subset.get("measure_mg_int", default_none)
+            )
             df[f"{prefix}_description_norm"] = subset.get("description_norm", default_empty).to_list()
-            df[f"{prefix}_product_id"] = subset.get("product_id", default_none).to_list()
+            df[f"{prefix}_product_id"] = self._normalize_id_context(subset.get("product_id", default_none))
+            df[f"{prefix}_original_product_name"] = subset.get("original_product_name", default_empty).to_list()
+            df[f"{prefix}_package_size"] = subset.get("package_size", default_none).to_list()
+            df[f"{prefix}_variant_weight"] = subset.get("variant_weight", default_none).to_list()
         return df
 
     # --- Resolution helpers -------------------------------------------------
@@ -113,9 +130,13 @@ class ProductMatchResolver:
         if pairs.empty:
             return pd.DataFrame()
 
+        final_scores = pairs["final_score"] if "final_score" in pairs.columns else pairs["similarity"]
+        pairs["_final_score_sort"] = pd.to_numeric(final_scores, errors="coerce").fillna(-1.0)
         pairs["_name_score_sort"] = pd.to_numeric(pairs["name_score"], errors="coerce").fillna(-1.0)
         pairs["_similarity_sort"] = pd.to_numeric(pairs["similarity"], errors="coerce").fillna(-1.0)
-        pairs.sort_values(["_name_score_sort", "_similarity_sort"], ascending=False, inplace=True)
+        pairs.sort_values(
+            ["_final_score_sort", "_name_score_sort", "_similarity_sort"], ascending=False, inplace=True
+        )
 
         used_left = set()
         used_right = set()
@@ -169,6 +190,10 @@ class ProductMatchResolver:
                     "right_product_name": row.get("right_product_name"),
                     "left_brand_name": row.get("left_brand_name"),
                     "right_brand_name": row.get("right_brand_name"),
+                    "left_package_size": row.get("left_package_size"),
+                    "right_package_size": row.get("right_package_size"),
+                    "left_measure_mg_int": row.get("left_measure_mg_int"),
+                    "right_measure_mg_int": row.get("right_measure_mg_int"),
                     "match_name_score": row.get("name_score"),
                     "match_similarity": row.get("similarity"),
                     "match_type": row.get("match_type"),
@@ -268,3 +293,65 @@ class ProductMatchResolver:
                 if not self._is_missing(v):
                     merged[k] = v
         return merged
+
+    # --- Normalization helpers for parquet safety -------------------------
+
+    def _normalize_measure_context(self, values: pd.Series) -> list[Any]:
+        cleaned = []
+        for val in values.tolist():
+            if self._is_missing(val):
+                cleaned.append(None)
+            else:
+                cleaned.append(str(val).strip())
+        return cleaned
+
+    def _normalize_measure_int_context(self, values: pd.Series) -> list[Any]:
+        cleaned: list[Any] = []
+        for val in values.tolist():
+            if self._is_missing(val):
+                cleaned.append(None)
+                continue
+            try:
+                cleaned.append(int(float(val)))
+            except Exception:
+                cleaned.append(None)
+        return cleaned
+
+    def _normalize_id_context(self, values: pd.Series) -> list[Any]:
+        cleaned = []
+        for val in values.tolist():
+            if self._is_missing(val):
+                cleaned.append(None)
+            else:
+                cleaned.append(str(val).strip())
+        return cleaned
+
+    def _normalize_id_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+        df = df.copy()
+        for col in df.columns:
+            if col.endswith("product_id"):
+                df[col] = [None if self._is_missing(v) else str(v).strip() for v in df[col].tolist()]
+        return df
+
+    def _stringify_value(self, value: Any) -> Optional[str]:
+        if self._is_missing(value):
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list, tuple, set)):
+            try:
+                return json.dumps(value, ensure_ascii=True, default=str)
+            except Exception:
+                return str(value)
+        return str(value)
+
+    def _normalize_object_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+        df = df.copy()
+        for col in df.columns:
+            if df[col].dtype == object:
+                df[col] = [self._stringify_value(v) for v in df[col].tolist()]
+        return df

@@ -218,6 +218,56 @@ def blocking_strategy_four(
     return out.reset_index(drop=True)
 
 
+def blocking_strategy_all_pairs(
+    df: pd.DataFrame,
+    cfg: BlockingConfig,
+) -> pd.DataFrame:
+    """Cross-join all records across sources without blocking."""
+    df = _prep_sources(df)
+    if df.empty:
+        return _safe_frame(None)
+
+    source_series = df["source"].astype(str).str.strip().str.lower()
+    left_source = (cfg.left_source or "").strip().lower()
+    right_source = (cfg.right_source or "").strip().lower()
+
+    def _cross_pairs(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+        left_idx = left.index.to_numpy()
+        right_idx = right.index.to_numpy()
+        if left_idx.size == 0 or right_idx.size == 0:
+            return pd.DataFrame(columns=["left_index", "right_index", "pass_tag"])
+        left_rep = np.repeat(left_idx, len(right_idx))
+        right_tile = np.tile(right_idx, len(left_idx))
+        return pd.DataFrame(
+            {
+                "left_index": left_rep,
+                "right_index": right_tile,
+                "pass_tag": "all_pairs",
+            }
+        )
+
+    left = df[source_series == left_source] if left_source else pd.DataFrame()
+    right = df[source_series == right_source] if right_source else pd.DataFrame()
+
+    if not left.empty and not right.empty:
+        left, right = _orient_source_pair(left, right, left_source, right_source)
+        return _cross_pairs(left, right)
+
+    pairs = []
+    for src_left, src_right in combinations(source_series.unique(), 2):
+        left = df[source_series == src_left]
+        right = df[source_series == src_right]
+        if left.empty or right.empty:
+            continue
+        left, right = _orient_source_pair(left, right, left_source, right_source)
+        pairs.append(_cross_pairs(left, right))
+    if not pairs:
+        return _safe_frame(None)
+    out = pd.concat(pairs, ignore_index=True)
+    out.drop_duplicates(subset=["left_index", "right_index"], inplace=True)
+    return out.reset_index(drop=True)
+
+
 def blocking_strategy_five(
     df: pd.DataFrame,
     cfg: BlockingConfig,

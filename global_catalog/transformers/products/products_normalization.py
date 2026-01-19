@@ -1,9 +1,85 @@
 import re
 import html
+import json
 import unicodedata
 import pandas as pd
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
+
+def _compile_phrase_patterns(phrases: List[str]) -> List[Tuple[str, re.Pattern]]:
+    patterns: List[Tuple[str, re.Pattern]] = []
+    sep = r"[-\s]+"
+    for phrase in phrases:
+        tokens = phrase.split()
+        if len(tokens) == 1:
+            pattern = re.compile(rf"\b{re.escape(tokens[0])}\b")
+        else:
+            pattern = re.compile(rf"\b{sep.join(map(re.escape, tokens))}\b")
+        patterns.append((phrase, pattern))
+    return patterns
+
+
+EXTRACT_TYPE_PATTERNS = _compile_phrase_patterns(
+    [
+        "live resin",
+        "rosin",
+        "distillate",
+        "diamonds",
+        "wax",
+        "shatter",
+        "badder",
+        "sauce",
+    ]
+)
+
+STRAIN_OR_FLAVOR_PATTERNS = _compile_phrase_patterns(
+    [
+        "tropic thunder",
+        "gush mints",
+        "blue dream",
+        "sour diesel",
+        "wedding cake",
+        "girl scout cookies",
+        "pineapple express",
+        "strawberry cough",
+        "purple punch",
+        "lemon haze",
+        "grape ape",
+        "cherry pie",
+        "banana og",
+        "og kush",
+        "gsc",
+        "zkittlez",
+        "runtz",
+        "gushers",
+        "tropicana",
+        "gelato",
+        "mimosa",
+        "blueberry",
+        "mango",
+        "strawberry",
+        "lemon",
+        "pineapple",
+        "mint",
+        "vanilla",
+    ]
+)
+
+PRODUCT_LINE_PATTERNS = _compile_phrase_patterns(
+    [
+        "select classics",
+        "black label",
+        "white label",
+        "elite",
+        "essentials",
+        "classics",
+        "signature",
+        "reserve",
+        "limited",
+        "platinum",
+        "gold",
+    ]
+)
 
 class ProductNormalizer:
     def __init__(
@@ -29,12 +105,19 @@ class ProductNormalizer:
             "product_id",
             "brand_name_norm",
             "product_name_norm",
+            "original_product_name",
+            "package_size",
+            "variant_weight",
             "description_norm",
             "uom_norm",
             "measure_mg",
+            "measure_mg_int",
             "strain_type_norm",
             "states_norm",
             "country_norm",
+            "extract_type_norm",
+            "strain_or_flavor_norm",
+            "product_line_norm",
         ]
         self._uom_pattern = r'(?:mg|milligram|milligrams|g|gram|grams|ml|milliliter|milliliters|fl\.?\s*oz|fl\s*oz|fluid\s*ounce|oz|ounce|ounces)'
         self._pack_word_pattern = r'(?:pack|packs|pk|ct|count)'
@@ -59,7 +142,6 @@ class ProductNormalizer:
             out = re.sub(rf"\b{re.escape(k.lower())}\b", v.lower(), out)
         out = re.sub(r"\s+", " ", out).strip()
         return out
-
     def _as_float(self, x: Any) -> Optional[float]:
         try:
             if isinstance(x, str) and "/" in x:
@@ -247,6 +329,62 @@ class ProductNormalizer:
         mg_int = int(round(m * mult))
         return f"{mg_int}-milligrams"
 
+    def _parse_mg_int_from_text(self, value: Any) -> Optional[int]:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return None
+        if isinstance(value, (int, np.integer)):
+            return int(value)
+        if isinstance(value, float):
+            if np.isnan(value):
+                return None
+            return int(round(value))
+        s = str(value).strip().lower()
+        if s in {"", "na", "none", "null", "nan", "each"}:
+            return None
+        s = s.replace(",", "")
+        m = re.match(r"^([0-9]*\.?[0-9]+)\s*-\s*milligrams?$", s)
+        if m:
+            return int(round(float(m.group(1))))
+        m = re.match(r"^([0-9]*\.?[0-9]+)\s*(mg|milligrams?)$", s)
+        if m:
+            return int(round(float(m.group(1))))
+        m = re.match(r"^([0-9]*\.?[0-9]+)\s*(g|grams?)$", s)
+        if m:
+            return int(round(float(m.group(1)) * 1000))
+        if re.match(r"^[0-9]*\.?[0-9]+$", s):
+            return int(round(float(s)))
+        return None
+
+    def _measure_to_mg_int(self, measure: Any, uom: Any, measure_mg: Any = None) -> Optional[int]:
+        u = self._normalize_uom_text(uom)
+        if u and u in self._mult and self._mult[u] is not None:
+            m = self._to_float_or_none(measure)
+            if m is not None:
+                return int(round(m * self._mult[u]))
+        mg_from_measure = self._parse_mg_int_from_text(measure)
+        if mg_from_measure is not None:
+            return mg_from_measure
+        return self._parse_mg_int_from_text(measure_mg)
+
+    def _first_phrase_match(self, text: str, patterns: List[Tuple[str, re.Pattern]]) -> Optional[str]:
+        if not text:
+            return None
+        for label, pattern in patterns:
+            if pattern.search(text):
+                return label
+        return None
+
+    def _derive_disambiguators(self, name_norm: Any, description_norm: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        name = "" if name_norm is None or (isinstance(name_norm, float) and np.isnan(name_norm)) else str(name_norm)
+        desc = "" if description_norm is None or (isinstance(description_norm, float) and np.isnan(description_norm)) else str(description_norm)
+        text = f"{name} {desc}".strip()
+        if not text:
+            return (None, None, None)
+        extract_type = self._first_phrase_match(text, EXTRACT_TYPE_PATTERNS)
+        strain_or_flavor = self._first_phrase_match(text, STRAIN_OR_FLAVOR_PATTERNS)
+        product_line = self._first_phrase_match(text, PRODUCT_LINE_PATTERNS)
+        return (extract_type, strain_or_flavor, product_line)
+
     def _maybe_fill_from_name(self, row: pd.Series) -> pd.Series:
         cur_measure = row.get("measure", np.nan)
         if not (pd.isna(cur_measure) or cur_measure is None):
@@ -330,7 +468,23 @@ class ProductNormalizer:
         return desc_norm
 
     def _ensure_cols(self, df: pd.DataFrame, src: str) -> pd.DataFrame:
-        cols = ["source","product_name","description","measure","uom","brand_id","brand_name","strain_type","states","country"]
+        cols = [
+            "source",
+            "product_name",
+            "original_product_name",
+            "description",
+            "measure",
+            "uom",
+            "package_size",
+            "variant_weight",
+            "brand_id",
+            "brand_name",
+            "brand",
+            "variant_weight",
+            "strain_type",
+            "states",
+            "country",
+        ]
         if src == "weedmaps":
             cols += [
                 "product_variant_weight_converted_mg",
@@ -357,6 +511,10 @@ class ProductNormalizer:
         out = out.apply(self._maybe_fill_from_name, axis=1)
         out["product_name"] = out["product_name"].apply(self._remove_detected_measure_from_name)
         out["measure_mg"] = [self._compute_mg(m, u) for m, u in zip(out.get("measure", []), out.get("uom", []))]
+        out["measure_mg_int"] = [
+            self._measure_to_mg_int(m, u, mmg)
+            for m, u, mmg in zip(out.get("measure", []), out.get("uom", []), out.get("measure_mg", []))
+        ]
         out["product_name_norm"] = out["product_name"].apply(self._normalize_text).apply(lambda x: self._apply_synonyms(x, self.name_synonyms))
         desc_source = "description" if "description" in out.columns else ("description_norm" if "description_norm" in out.columns else None)
         if desc_source is None:
@@ -367,11 +525,21 @@ class ProductNormalizer:
         #testing without limitation as min len was to small
         #out["description_norm"] = [self._desc_backfill(d, n) for d, n in zip(desc_norm, out["product_name_norm"])]
         out["description_norm"] = desc_norm
-        out["brand_name_norm"] = out.get("brand_name", np.nan).apply(self._normalize_brand)
+        brand_name = out.get("brand_name", np.nan).replace(r"^\s*$", np.nan, regex=True)
+        if "brand" in out.columns:
+            brand_alt = out["brand"].replace(r"^\s*$", np.nan, regex=True)
+            brand_name = brand_alt.combine_first(brand_name)
+        out["brand_name_norm"] = brand_name.apply(self._normalize_brand)
         out["uom_norm"] = out["uom"].map(self._normalize_uom_text)
         out["strain_type_norm"] = out.get("strain_type", np.nan).apply(self._normalize_strain_type)
         out["states_norm"] = out.get("states", np.nan).apply(self._normalize_states)
         out["country_norm"] = out.get("country", np.nan).apply(self._normalize_country)
+        disambiguators = [
+            self._derive_disambiguators(n, d) for n, d in zip(out.get("product_name_norm", []), out.get("description_norm", []))
+        ]
+        out["extract_type_norm"] = [d[0] for d in disambiguators]
+        out["strain_or_flavor_norm"] = [d[1] for d in disambiguators]
+        out["product_line_norm"] = [d[2] for d in disambiguators]
         out["source"] = "hoodie"
         return self._finalize(out)
 
@@ -383,9 +551,26 @@ class ProductNormalizer:
         if "brand_name_resolved" in out.columns:
             resolved = out["brand_name_resolved"].replace(r"^\s*$", np.nan, regex=True)
             out["brand_name"] = resolved.combine_first(out["brand_name"])
+        if "brand" in out.columns:
+            brand_alt = out["brand"].replace(r"^\s*$", np.nan, regex=True)
+            out["brand_name"] = brand_alt.combine_first(out["brand_name"])
 
+        # Seed measure_mg from product_variant_weight_converted_mg when present (e.g., Redshift CSVs)
+        measure_mg = pd.Series([np.nan] * len(out), index=out.index)
         if "product_variant_weight_converted_mg" in out.columns:
-            out["measure_mg"] = out["product_variant_weight_converted_mg"].astype(object)
+            pvw = out["product_variant_weight_converted_mg"].replace(r"^\s*$", np.nan, regex=True)
+            measure_mg = pvw.astype(object)
+        if "measure" in out.columns and "uom" in out.columns:
+            computed = [self._compute_mg(m, u) for m, u in zip(out.get("measure", []), out.get("uom", []))]
+            measure_mg = measure_mg.combine_first(pd.Series(computed, index=out.index))
+        if "variant_weight" in out.columns:
+            vw = out["variant_weight"].replace(r"^\s*$", np.nan, regex=True)
+            measure_mg = measure_mg.combine_first(vw)
+        out["measure_mg"] = measure_mg.astype(object)
+        out["measure_mg_int"] = [
+            self._measure_to_mg_int(m, u, mmg)
+            for m, u, mmg in zip(out.get("measure", []), out.get("uom", []), out.get("measure_mg", []))
+        ]
         u_source = None
         if "uom" in out.columns and out["uom"].notna().any():
             u_source = out["uom"]
@@ -404,6 +589,12 @@ class ProductNormalizer:
         out["strain_type_norm"] = out.get("strain_type", np.nan).apply(self._normalize_strain_type)
         out["states_norm"] = out.get("states", np.nan).apply(self._normalize_states)
         out["country_norm"] = out.get("country", np.nan).apply(self._normalize_country)
+        disambiguators = [
+            self._derive_disambiguators(n, d) for n, d in zip(out.get("product_name_norm", []), out.get("description_norm", []))
+        ]
+        out["extract_type_norm"] = [d[0] for d in disambiguators]
+        out["strain_or_flavor_norm"] = [d[1] for d in disambiguators]
+        out["product_line_norm"] = [d[2] for d in disambiguators]
         out["source"] = "weedmaps"
         return self._finalize(out)
 
@@ -421,3 +612,97 @@ class ProductNormalizer:
             return pd.DataFrame(columns=self.keep_columns)
         out = pd.concat(frames, ignore_index=True, sort=False)
         return out
+
+
+class EnrichedProductNormalizer(ProductNormalizer):
+    """Normalizer for records containing matching_enrichment/original_data objects."""
+
+    def _coerce_dict(self, value: Any) -> Dict[str, Any]:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return {}
+        return {}
+
+    def _first_non_empty(self, *values: Any) -> Any:
+        for v in values:
+            if v is None:
+                continue
+            if isinstance(v, float) and np.isnan(v):
+                continue
+            if isinstance(v, str):
+                if v.strip() == "" or v.strip().lower() in {"null", "none", "nan"}:
+                    continue
+                return v
+            return v
+        return None
+
+    def _flatten_enriched(self, df: pd.DataFrame, source_hint: str) -> pd.DataFrame:
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            me = self._coerce_dict(row.get("matching_enrichment"))
+            orig = self._coerce_dict(row.get("original_data"))
+            source = self._first_non_empty(me.get("source"), orig.get("source"), source_hint)
+            product_id = self._first_non_empty(me.get("product_id"), row.get("product_id"), orig.get("product_id"))
+            product_name = self._first_non_empty(
+                me.get("product_name"),
+                orig.get("product_name"),
+                row.get("raw_item_name"),
+                row.get("product_name"),
+            )
+            original_product_name = self._first_non_empty(
+                orig.get("product_name"),
+                row.get("raw_item_name"),
+                me.get("product_name"),
+            )
+            brand_name = self._first_non_empty(me.get("brand"), orig.get("brand_name"), row.get("brand_name"))
+            description = self._first_non_empty(orig.get("description"), row.get("description"))
+            measure = self._first_non_empty(me.get("measure"))
+            uom = self._first_non_empty(me.get("uom"))
+            variant_weight = self._first_non_empty(me.get("variant_weight"))
+            package_size = self._first_non_empty(me.get("package_size"))
+            strain_type = self._first_non_empty(orig.get("strain_type"), row.get("strain_type"))
+            rows.append(
+                {
+                    "source": source,
+                    "product_id": product_id,
+                    "product_name": product_name,
+                    "original_product_name": original_product_name,
+                    "brand_name": brand_name,
+                    "description": description,
+                    "measure": measure,
+                    "uom": uom,
+                    "variant_weight": variant_weight,
+                    "package_size": package_size,
+                    "strain_type": strain_type,
+                    "product_variant_weight_converted_mg": orig.get("product_variant_weight_converted_mg"),
+                    "product_variant_weight_unit": orig.get("product_variant_weight_unit"),
+                    "product_variant_weight_value": orig.get("product_variant_weight_value"),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _process_enriched_source(self, df: pd.DataFrame, source_hint: str) -> pd.DataFrame:
+        flat = self._flatten_enriched(df, source_hint)
+        if source_hint == "weedmaps":
+            return self._process_weedmaps(flat)
+        return self._process_hoodie(flat)
+
+    def process(
+        self,
+        hoodie_df: Optional[pd.DataFrame] = None,
+        weedmaps_df: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        frames: List[pd.DataFrame] = []
+        if hoodie_df is not None and len(hoodie_df) > 0:
+            frames.append(self._process_enriched_source(hoodie_df, "hoodie"))
+        if weedmaps_df is not None and len(weedmaps_df) > 0:
+            frames.append(self._process_enriched_source(weedmaps_df, "weedmaps"))
+        if not frames:
+            return pd.DataFrame(columns=self.keep_columns)
+        return pd.concat(frames, ignore_index=True, sort=False)

@@ -5,11 +5,22 @@ from global_catalog.matching.products.blocking_v2 import BlockingConfig
 from global_catalog.matching.products.fuzzy_matcher_v2 import FuzzyMatcherConfig
 from global_catalog.pipelines.products.product_pipeline import ProductPipeline
 from global_catalog.pipelines.products.product_resolver import ProductMatchResolver
+from global_catalog.transformers.products.products_normalization import (
+    ProductNormalizer,
+    EnrichedProductNormalizer,
+)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run product matching pipeline on local snapshots.")
     parser.add_argument("--snapshot-root", default="data/snapshots/products", help="Directory with product CSV snapshots.")
+    parser.add_argument(
+        "--combined",
+        default=None,
+        help="Single CSV/JSON/JSONL containing both sources with a 'source' column.",
+    )
+    parser.add_argument("--weedmaps", default=None, help="Override weedmaps snapshot path (CSV/JSON/JSONL).")
+    parser.add_argument("--hoodie", default=None, help="Override hoodie snapshot path (CSV/JSON/JSONL).")
     parser.add_argument("--out-root", default="artifacts/products", help="Artifacts output directory.")
     parser.add_argument("--block-threshold", type=float, default=0.3, help="Blocking Jaccard threshold.")
     parser.add_argument("--match-threshold", type=float, default=0.75, help="Fuzzy matcher threshold.")
@@ -17,9 +28,27 @@ def parse_args():
     parser.add_argument("--description-token-limit", type=int, default=25, help="Max description tokens if enabled.")
     parser.add_argument("--strict-measure-only", action="store_true", help="Skip lenient measure blocking pass.")
     parser.add_argument(
+        "--require-measure-match",
+        action="store_true",
+        help="Require measure_mg to be present on both sides and equal; defaults to lenient.",
+    )
+    parser.add_argument(
+        "--schema",
+        default="normal",
+        choices=["normal", "enriched"],
+        help="Normalization schema to use.",
+    )
+    parser.add_argument(
         "--blocking-strategy",
         default="strategy_one",
-        choices=["strategy_one", "strategy_two", "strategy_three", "strategy_four", "strategy_five"],
+        choices=[
+            "strategy_one",
+            "strategy_two",
+            "strategy_three",
+            "strategy_four",
+            "strategy_five",
+            "all_pairs",
+        ],
         help="Which blocking strategy to execute.",
     )
     parser.add_argument(
@@ -32,11 +61,26 @@ def parse_args():
         default="artifacts/products/pairs",
         help="Directory to read/write cached candidate pair parquet files.",
     )
+    parser.add_argument(
+        "--skip-candidate-pairs",
+        action="store_true",
+        help="Skip writing candidate_pairs.parquet to reduce memory usage.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    source_files = None
+    combined_path = None
+    if args.combined:
+        combined_path = args.combined
+    else:
+        if args.hoodie or args.weedmaps:
+            source_files = {
+                "weedmaps": args.weedmaps or "products_weedmaps.csv",
+                "hoodie": args.hoodie or "products_hoodie.csv",
+            }
     blocking_cfg = BlockingConfig(
         threshold=args.block_threshold,
         max_per_left=args.max_per_left,
@@ -49,15 +93,24 @@ def main():
     )
     fuzzy_cfg = FuzzyMatcherConfig(
         threshold=args.match_threshold,
+        require_measure_match=(args.require_measure_match or args.strict_measure_only),
     )
 
     run_label = "strict" if args.strict_measure_only else "lenient"
+    normalizer = EnrichedProductNormalizer() if args.schema == "enriched" else ProductNormalizer()
     pipeline = ProductPipeline(
         repo=object(),
         snapshot_root=args.snapshot_root,
+        source_files=source_files,
+        combined_source_path=combined_path,
+        normalizer=normalizer,
         blocking_config=blocking_cfg,
         fuzzy_config=fuzzy_cfg,
-        resolver=ProductMatchResolver(out_root=args.out_root, run_label=run_label),
+        resolver=ProductMatchResolver(
+            out_root=args.out_root,
+            run_label=run_label,
+            skip_candidate_pairs=args.skip_candidate_pairs,
+        ),
         pairs_cache_dir=args.pairs_dir,
         local_run=args.use_local_pairs,
     )
