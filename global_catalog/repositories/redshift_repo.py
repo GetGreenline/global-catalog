@@ -4,20 +4,32 @@ import awswrangler as wr
 import pandas as pd
 import redshift_connector
 from global_catalog.common.db_credentials import get_redshift_local_connection_params
+from global_catalog.config import settings
 
 class RedShiftRepo:
     def __init__(self):
         self.credentials = get_redshift_local_connection_params()
 
     def get_conn(self):
-        return redshift_connector.connect(
-            host=self.credentials["host"],
-            port=int(self.credentials["port"]),
-            database=self.credentials["database"],
-            user=self.credentials["user"],
-            password=self.credentials["password"],
-            ssl=True,
-        )
+        try:
+            return redshift_connector.connect(
+                host=self.credentials["host"],
+                port=int(self.credentials["port"]),
+                database=self.credentials["database"],
+                user=self.credentials["user"],
+                password=self.credentials["password"],
+                ssl=True,
+            )
+        except Exception as exc:
+            host = self.credentials.get("host")
+            port = self.credentials.get("port")
+            database = self.credentials.get("database")
+            profile = settings.AWS_PROFILE
+            raise RuntimeError(
+                "Redshift connection failed "
+                f"(host={host}, port={port}, db={database}, profile={profile}). "
+                "Check REDSHIFT_HOST/PORT (or SSH tunnel), cluster access, and AWS credentials."
+            ) from exc
 
     def read_sql(self, sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         conn = self.get_conn()

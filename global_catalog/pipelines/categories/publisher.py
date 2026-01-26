@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from typing import Callable, Optional, Dict, Any
 
+import boto3
+
+from global_catalog.config import settings
 from global_catalog.pipelines.entity_pipeline import EntityPipelineContext
 from global_catalog.publishers.s3_publisher import mirror_artifacts_to_s3
 
@@ -45,16 +48,19 @@ class CategoriesPublisher:
         outputs: Dict[str, str] = {"run_dir": str(run_dir)}
 
         category_global_id_map_df = resolution_payload.get("category_global_id_map")
-        staging_parquet = run_dir / "staging_categories_id_mapping.parquet"
-        staging_csv = run_dir / "staging_categories_id_mapping.csv"
+        stage = settings.STAGE
+        mapping_name = f"{stage}_categories_id_mapping"
+        staging_parquet = run_dir / f"{mapping_name}.parquet"
+        staging_csv = run_dir / f"{mapping_name}.csv"
         if category_global_id_map_df is not None:
             staged_df = self._format_category_global_id_map(category_global_id_map_df)
             staged_df.to_parquet(staging_parquet, index=False)
             staged_df.to_csv(staging_csv, index=False)
+            self._upload_category_mapping(staging_parquet, mapping_name)
         outputs["category_global_id_map_local"] = str(staging_parquet)
         outputs["category_global_id_map_csv_local"] = str(staging_csv)
-        outputs["staging_categories_id_mapping_parquet"] = str(staging_parquet)
-        outputs["staging_categories_id_mapping_csv"] = str(staging_csv)
+        outputs["categories_id_mapping_parquet"] = str(staging_parquet)
+        outputs["categories_id_mapping_csv"] = str(staging_csv)
 
         pairs = match_results.get("pairs")
         summary = match_results.get("summary")
@@ -106,6 +112,16 @@ class CategoriesPublisher:
             }
         )
         return metrics
+
+    def _upload_category_mapping(self, parquet_path: Path, mapping_name: str) -> None:
+        bucket = settings.GC_MAPPING_S3_BUCKET
+        prefix = settings.GC_MAPPING_S3_PREFIX.rstrip("/")
+        key = f"{prefix}/{mapping_name}.parquet"
+        profile = getattr(settings, "AWS_S3_PROFILE", settings.AWS_PROFILE)
+        session = boto3.Session(profile_name=profile, region_name=settings.AWS_REGION)
+        s3 = session.client("s3")
+        s3.upload_file(str(parquet_path), bucket, key)
+        print(f"S3 upload complete: s3://{bucket}/{key} (profile={profile})")
 
     def _mirror_artifacts(self, run_dir: Path, run_metadata: Dict[str, Any]) -> None:
         s3_run_prefix = run_metadata.get("s3_run_prefix")

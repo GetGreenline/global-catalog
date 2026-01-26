@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from global_catalog.config import settings
 from global_catalog.matching.categories.matcher import CategoryMatchConfig, CategoriesMatcher
@@ -11,6 +17,7 @@ from global_catalog.pipelines.categories.category_pipeline import (
     CategoryPipeline,
 )
 from global_catalog.pipelines.categories.match_publisher import CategoriesMatchPublisher
+from global_catalog.pipelines.categories.publisher import CategoriesPublisher
 from global_catalog.repositories.s3_repo import S3Repo
 
 
@@ -25,7 +32,7 @@ class NullRepo:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run categories ingest+normalize+match only")
+    parser = argparse.ArgumentParser(description="Run categories ingest+normalize+match (and optional resolve)")
     parser.add_argument(
         "--ingest-source",
         choices=["s3", "redshift", "csv"],
@@ -59,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-snapshot", action="store_true", default=False)
     parser.add_argument("--snapshot-csv", default=None, help="Local CSV snapshot path")
     parser.add_argument("--csv-path", default=None, help="CSV file to ingest directly")
+    parser.add_argument("--resolve", action="store_true", default=False, help="Run resolve after matching")
     return parser.parse_args()
 
 
@@ -100,11 +108,12 @@ def main() -> None:
     resolver = NoopResolver()
 
     match_publisher = CategoriesMatchPublisher()
+    resolution_publisher = CategoriesPublisher() if args.resolve else None
     pipe = CategoryPipeline(
         repo=repo,
         matcher=matcher,
         resolver=resolver,
-        publisher_fn=None,
+        publisher_fn=resolution_publisher,
         match_publisher_fn=match_publisher,
     )
 
@@ -121,14 +130,24 @@ def main() -> None:
         csv_path=args.csv_path,
     )
 
-    result = pipe.run_match_stage(run_cfg)
-    publish_outputs = (result.get("match_publish_result") or {}).get("outputs") or {}
-    if publish_outputs:
-        run_dir = publish_outputs.get("run_dir")
-        if run_dir:
-            print(f"Match artifacts directory: {run_dir}")
-        else:
-            print("Match artifacts written; inspect run_metadata for file details.")
+    if args.resolve:
+        result = pipe.run_categories_pipeline(run_cfg)
+        publish_outputs = (result.get("publish_result") or {}).get("outputs") or {}
+        if publish_outputs:
+            run_dir = publish_outputs.get("run_dir")
+            if run_dir:
+                print(f"Artifacts directory: {run_dir}")
+            else:
+                print("Artifacts written; inspect metrics for file details.")
+    else:
+        result = pipe.run_match_stage(run_cfg)
+        publish_outputs = (result.get("match_publish_result") or {}).get("outputs") or {}
+        if publish_outputs:
+            run_dir = publish_outputs.get("run_dir")
+            if run_dir:
+                print(f"Match artifacts directory: {run_dir}")
+            else:
+                print("Match artifacts written; inspect run_metadata for file details.")
 
 
 if __name__ == "__main__":
