@@ -34,7 +34,11 @@ class CategoriesMatcher:
 
     def normalize(self, df_raw: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         print("NORMALIZE: schema gate")
-        df = df_raw
+        df = df_raw.copy()
+        if "match_side" in df.columns:
+            if "source_raw" not in df.columns:
+                df["source_raw"] = df["source"] if "source" in df.columns else pd.NA
+            df["source"] = df["match_side"]
         # Handle timestamp conversion with fallback to current timestamp for invalid values
         df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
         # Replace NaT values with current timestamp

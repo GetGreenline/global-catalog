@@ -109,7 +109,7 @@ class CategoryNormalizer:
         if need_id.any():
             out.loc[need_id, "id"] = out.loc[need_id].apply(
                 lambda r: _build_row_id(
-                    r.get("source", ""),
+                    r.get("source_raw", r.get("source", "")),
                     r.get("level_one", ""),
                     r.get("level_two", ""),
                     r.get("level_three", ""),

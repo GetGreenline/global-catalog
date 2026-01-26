@@ -88,7 +88,7 @@ def _ensure_cats_contract(cats_df: pd.DataFrame) -> pd.DataFrame:
     if need_id.any():
         df.loc[need_id, "id"] = df.loc[need_id].apply(
             lambda r: _build_row_id(
-                r.get("source", ""),
+                r.get("source_raw", r.get("source", "")),
                 r.get("level_one", ""),
                 r.get("level_two", ""),
                 r.get("level_three", ""),

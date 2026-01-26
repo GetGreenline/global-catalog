@@ -5,20 +5,29 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Literal
 
 import boto3
+import pandas as pd
 
 import global_catalog.config.settings as settings
 from global_catalog.pipelines.categories.resolve_category_pairs import global_category_id_map
 from global_catalog.pipelines.entity_pipeline import EntityPipeline
+from global_catalog.repositories.redshift_repo import RedShiftRepo
 
 
 @dataclass
 class CategoriesRunConfig:
-    date_prefix: str
+    date_prefix: Optional[str]
     sources: list[str]
     local_out_root: str
+    ingest_source: Literal["s3", "redshift", "csv"] = "s3"
+    redshift_sql_path: Optional[str] = None
+    redshift_left_sql_path: Optional[str] = None
+    redshift_right_sql_paths: Optional[list[str]] = None
+    use_snapshot: bool = False
+    snapshot_csv: Optional[str] = None
+    csv_path: Optional[str] = None
     s3_run_prefix: Optional[str] = None
     s3_latest_prefix: Optional[str] = None
 
@@ -45,10 +54,78 @@ class CategoryPipeline(EntityPipeline):
     def ingest(self) -> Dict[str, Any]:
         cfg = self._require_run_config()
         self._log_identity()
-        print(
-            f"READ: s3://{self.repo.bucket}/{self.repo.prefix}/<source>/raw/{cfg.date_prefix}/categories.csv"
-        )
-        df_raw = self.repo.read_categories_raw(sources=cfg.sources, date_prefix=cfg.date_prefix)
+        if cfg.ingest_source == "s3":
+            if not cfg.date_prefix:
+                raise ValueError("date_prefix is required when ingest_source='s3'")
+            print(
+                f"READ: s3://{self.repo.bucket}/{self.repo.prefix}/<source>/raw/{cfg.date_prefix}/categories.csv"
+            )
+            df_raw = self.repo.read_categories_raw(sources=cfg.sources, date_prefix=cfg.date_prefix)
+        elif cfg.ingest_source == "redshift":
+            rs = RedShiftRepo()
+            if cfg.use_snapshot and cfg.snapshot_csv:
+                snapshot_path = Path(cfg.snapshot_csv)
+                if snapshot_path.exists():
+                    df_raw = pd.read_csv(snapshot_path)
+                    print(f"READ: redshift snapshot rows={len(df_raw)} path={snapshot_path}")
+                else:
+                    df_raw = None
+            else:
+                df_raw = None
+
+            if df_raw is None:
+                if cfg.redshift_left_sql_path or cfg.redshift_right_sql_paths:
+                    if not cfg.redshift_left_sql_path:
+                        raise ValueError("redshift_left_sql_path is required when using separate left/right ingestion")
+                    left_path = Path(cfg.redshift_left_sql_path)
+                    left_sql = left_path.read_text()
+                    if not left_sql.strip():
+                        raise ValueError(f"redshift_left_sql_path is empty: {left_path}")
+                    left_df = rs.read_sql(left_sql)
+                    left_df = left_df.copy()
+                    left_df["match_side"] = "left"
+
+                    right_paths = cfg.redshift_right_sql_paths or []
+                    if not right_paths:
+                        raise ValueError("redshift_right_sql_paths must include at least one path for right ingestion")
+                    right_frames = []
+                    for right_sql_path in right_paths:
+                        rpath = Path(right_sql_path)
+                        rsql = rpath.read_text()
+                        if not rsql.strip():
+                            raise ValueError(f"redshift_right_sql_paths entry is empty: {rpath}")
+                        rdf = rs.read_sql(rsql)
+                        rdf = rdf.copy()
+                        rdf["match_side"] = "right"
+                        right_frames.append(rdf)
+
+                    df_raw = pd.concat([left_df] + right_frames, ignore_index=True)
+                    print(
+                        f"READ: redshift left_rows={len(left_df)} right_rows={sum(len(r) for r in right_frames)} "
+                        f"total_rows={len(df_raw)} left_sql={left_path}"
+                    )
+                else:
+                    if not cfg.redshift_sql_path:
+                        raise ValueError("redshift_sql_path is required when ingest_source='redshift'")
+                    sql_path = Path(cfg.redshift_sql_path)
+                    sql = sql_path.read_text()
+                    if not sql.strip():
+                        raise ValueError(f"redshift_sql_path is empty: {sql_path}")
+                    df_raw = rs.read_sql(sql)
+                    print(f"READ: redshift rows={len(df_raw)} sql_path={sql_path}")
+
+                if cfg.use_snapshot and cfg.snapshot_csv:
+                    snapshot_path = Path(cfg.snapshot_csv)
+                    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                    df_raw.to_csv(snapshot_path, index=False)
+                    print(f"READ: redshift snapshot saved path={snapshot_path}")
+        elif cfg.ingest_source == "csv":
+            if not cfg.csv_path:
+                raise ValueError("csv_path is required when ingest_source='csv'")
+            df_raw = pd.read_csv(cfg.csv_path)
+            print(f"READ: csv rows={len(df_raw)} path={cfg.csv_path}")
+        else:
+            raise ValueError(f"Unsupported ingest_source: {cfg.ingest_source}")
         dedup_metrics = {
             "duplicates_removed": 0,
             "input_rows": int(len(df_raw)),
@@ -77,6 +154,15 @@ class CategoryPipeline(EntityPipeline):
         pairs = self.matcher.generate_pairs(df_norm)
         pairs = self.matcher.filter_pairs(pairs, df_norm)
         pairs, summary = self.matcher.summarize(pairs, df_pretty_like)
+        if not pairs.empty and "source_raw" in df_norm.columns:
+            source_map = (
+                df_norm[["id", "source_raw"]]
+                .drop_duplicates(subset=["id"])
+                .set_index("id")["source_raw"]
+            )
+            pairs = pairs.copy()
+            pairs["left_source_raw"] = pairs["left_id"].map(source_map)
+            pairs["right_source_raw"] = pairs["right_id"].map(source_map)
         if pairs.empty:
             sample = pairs
         else:
@@ -113,7 +199,8 @@ class CategoryPipeline(EntityPipeline):
         print("RESOLVE: start")
         resolution = self.resolver.resolve(pairs, df_raw)
         category_global_id_map_df = global_category_id_map(df_raw, resolution)
-        run_id = f"{cfg.date_prefix}_{uuid.uuid4().hex[:8]}"
+        date_prefix = cfg.date_prefix or pd.Timestamp.utcnow().strftime("%Y%m%d")
+        run_id = f"{date_prefix}_{uuid.uuid4().hex[:8]}"
         run_dir = Path(cfg.local_out_root) / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         total_seconds = round(time.perf_counter() - (self._run_started_at or time.perf_counter()), 3)
@@ -134,7 +221,7 @@ class CategoryPipeline(EntityPipeline):
                 "bucket": self.repo.bucket,
                 "prefix": self.repo.prefix,
                 "sources": cfg.sources,
-                "date_prefix": cfg.date_prefix,
+                "date_prefix": date_prefix,
             },
             "dedup_metrics": raw_data.get("dedup_metrics", {}),
             "s3_run_prefix": s3_run_prefix,
