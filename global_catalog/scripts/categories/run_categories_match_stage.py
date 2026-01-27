@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
 def normalize_date_prefix(date_prefix: str | None) -> str | None:
     if not date_prefix:
         return None
-    stripped = re.sub(r"[^0-9]", "", date_prefix or "")
+    stripped = re.sub(r"[^0-9]", "", date_prefix)
     if len(stripped) != 8:
         raise ValueError(f"date_prefix must resolve to YYYYMMDD; got '{date_prefix}'")
     datetime.strptime(stripped, "%Y%m%d")
