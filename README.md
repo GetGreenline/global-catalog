@@ -38,6 +38,35 @@ Expected output:
 - Console logs for each pipeline step (ingest/normalize/match/resolve) plus a final `Artifacts directory: /path/to/run`.
 - Local run dir contains `pairs.parquet`, `summary.parquet`, `sample.csv`, `resolution.{parquet,csv}`, `{stage}_categories_id_mapping.{parquet,csv}` (with `external_id` replacing `category_id`), and `metrics.json`.
 
+## Running Categories From Redshift (Match + Resolve)
+
+CLI entrypoint: `python -m global_catalog.scripts.categories.run_categories_match_stage`
+
+Parameters:
+- `--ingest-source`: Set to `redshift` for SQL-based ingestion.
+- `--redshift-left-sql`: Path to the left-side SQL file. This is the anchor side for global_id attribution.
+- `--redshift-right-sql`: One or more right-side SQL files. Repeat the flag to pass multiple paths.
+- `--out-root`: Local directory where run folders (`<date>_<uuid>/`) are created.
+- `--resolve`: Enables resolve (writes `resolution.{parquet,csv}` and `{stage}_categories_id_mapping.{parquet,csv}`).
+- `--offline`: Skip S3 upload; write artifacts locally only.
+- `--date-prefix`: Optional YYYYMMDD tag used in run IDs.
+
+Example command (offline run with resolve):
+
+```bash
+python -m global_catalog.scripts.categories.run_categories_match_stage \
+  --ingest-source redshift \
+  --redshift-left-sql path/to/left_source.sql \
+  --redshift-right-sql path/to/right_source.sql \
+  --out-root ./artifacts/categories \
+  --resolve \
+  --offline
+```
+
+Expected output:
+- Console logs for each pipeline step (ingest/normalize/match/resolve) plus a final `Artifacts directory: /path/to/run`.
+- Local run dir contains `pairs.parquet`, `summary.parquet`, `sample.csv`, `resolution.{parquet,csv}` (when `--resolve` is set), `{stage}_categories_id_mapping.{parquet,csv}` (when `--resolve` is set), and `metrics.json`.
+
 ## Products V1 (In Progress)
 
 Product ingestion/matching is being bootstrapped; CLI and documentation will be added once the first end-to-end path is ready.
