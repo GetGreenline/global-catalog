@@ -45,6 +45,12 @@ def _count_levels(pp):
     return sum(v is not None and str(v).strip() != "" for v in (l1, l2, l3))
 
 def _winner_side(row):
+    ls = str(row.get("left_source", "")).strip().lower()
+    rs = str(row.get("right_source", "")).strip().lower()
+    if ls == "left" and rs == "right":
+        return "left"
+    if ls == "right" and rs == "left":
+        return "right"
     lc = _count_levels(row["left_path_pretty"])
     rc = _count_levels(row["right_path_pretty"])
     if lc > rc:
@@ -72,6 +78,14 @@ def _ensure_cats_contract(cats_df: pd.DataFrame) -> pd.DataFrame:
         df["category_id"] = df["category_id"].astype(str).str.strip()
         df.loc[df["category_id"].str.lower().isin(["nan"]), "category_id"] = ""
 
+    if "global_id" not in df.columns:
+        df["global_id"] = ""
+    else:
+        df["global_id"] = df["global_id"].astype(object)
+        df["global_id"] = df["global_id"].where(df["global_id"].notna(), "")
+        df["global_id"] = df["global_id"].astype(str).str.strip()
+        df.loc[df["global_id"].str.lower().isin(["nan", "none"]), "global_id"] = ""
+
     if "updated_at" not in df.columns:
         df["updated_at"] = pd.Timestamp.now()
     else:
@@ -88,7 +102,7 @@ def _ensure_cats_contract(cats_df: pd.DataFrame) -> pd.DataFrame:
     if need_id.any():
         df.loc[need_id, "id"] = df.loc[need_id].apply(
             lambda r: _build_row_id(
-                r.get("source", ""),
+                r.get("source_raw", r.get("source", "")),
                 r.get("level_one", ""),
                 r.get("level_two", ""),
                 r.get("level_three", ""),
@@ -127,7 +141,8 @@ def build_resolution_from_pairs(pairs: pd.DataFrame, cats_df: pd.DataFrame) -> p
         axis=1
     )
     p = p.sort_values(["pair_key", "similarity"], ascending=[True, False]).drop_duplicates("pair_key")
-    p["winner"] = p.apply(_winner_side, axis=1)
+    # Left side is always the anchor for global_id attribution.
+    p["winner"] = "left"
 
     keep_cols = {"left": ["left_id", "left_source", "left_path_pretty"],
                  "right": ["right_id", "right_source", "right_path_pretty"]}
@@ -301,7 +316,6 @@ def global_category_id_map(cats_df: pd.DataFrame, resolution: pd.DataFrame) -> p
         return cur
 
     cats["anchor_id"] = cats["id"].astype(str).apply(_find_anchor_id)
-    cats["global_id"] = cats["anchor_id"].astype(str).apply(_uuid_from_hash)
 
     # Include ALL categories in the mapping, not just winners
     # This ensures dropped categories can still be looked up by their original category_id
@@ -316,6 +330,21 @@ def global_category_id_map(cats_df: pd.DataFrame, resolution: pd.DataFrame) -> p
     all_cats.sort_values(["id", "updated_at"], ascending=[True, False], inplace=True)
     all_cats = all_cats.drop_duplicates(subset=["id"], keep="first")
 
+    # Prefer existing global_id from the anchor when present, otherwise mint a new one.
+    gid_map = (
+        all_cats[["id", "global_id"]]
+        .copy()
+        .assign(global_id=lambda d: d["global_id"].astype(str).str.strip())
+        .set_index("id")["global_id"]
+        .to_dict()
+    )
+    all_cats["global_id"] = all_cats["anchor_id"].map(gid_map)
+    # Note: entries in gid_map that normalize to an empty string are intentionally treated
+    # as missing here, so they will cause new global_ids to be minted from anchor_id.
+    missing_gid = all_cats["global_id"].isna() | (all_cats["global_id"].astype(str).str.strip() == "")
+    if missing_gid.any():
+        all_cats.loc[missing_gid, "global_id"] = all_cats.loc[missing_gid, "anchor_id"].astype(str).apply(_uuid_from_hash)
+
     all_cats["source"] = all_cats["source"].astype(str).str.strip().str.lower()
     all_cats["category_id"] = (
         all_cats["category_id"]
@@ -323,11 +352,10 @@ def global_category_id_map(cats_df: pd.DataFrame, resolution: pd.DataFrame) -> p
         .astype(str).str.strip()
     )
     all_cats.loc[all_cats["category_id"].str.lower().isin(["nan", "none"]), "category_id"] = ""
-    all_cats["country"] = all_cats["country"].astype(str).str.strip().str.upper()
-    out = all_cats[["global_id", "category_id", "source", "country", "updated_at"]].copy()
+    out = all_cats[["global_id", "category_id", "source", "updated_at"]].copy()
     # Note: global_id is no longer unique since dropped categories share the same global_id as their winner
     # Note: load_timestamp column excluded from output parquet file
-    return out[["global_id", "category_id", "source", "country", "updated_at"]]
+    return out[["global_id", "category_id", "source", "updated_at"]]
 
 
 def main():

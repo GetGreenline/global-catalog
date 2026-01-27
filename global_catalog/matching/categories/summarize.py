@@ -8,8 +8,10 @@ def attach_pretty_paths(matches: pd.DataFrame, df_like: pd.DataFrame) -> pd.Data
 
     if "id" not in df_like.columns:
         raise ValueError("df_like must contain an 'id' column.")
-    pretty_map = df_like.set_index("id").apply(
-        lambda r: path_pretty(r["level_one"], r["level_two"], r["level_three"]), axis=1
+    pretty_map = (
+        df_like.drop_duplicates(subset=["id"])
+        .set_index("id")
+        .apply(lambda r: path_pretty(r["level_one"], r["level_two"], r["level_three"]), axis=1)
     )
 
     out = matches.copy()

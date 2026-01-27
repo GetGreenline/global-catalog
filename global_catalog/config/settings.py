@@ -4,6 +4,8 @@ OUT_STAGE = 'local'
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_PROFILE = os.getenv("AWS_PROFILE", "prod-developer")
+AWS_S3_PROFILE = os.getenv("AWS_S3_PROFILE")
+
 
 GC_S3_BUCKET = os.getenv("GC_S3_BUCKET", "blaze-sandbox-global-catalog-service-staging-bucket")
 GC_S3_PREFIX = os.getenv("GC_S3_PREFIX", "global-catalog/categories")
@@ -21,3 +23,10 @@ GC_BLOCK_BY = os.getenv("GC_BLOCK_BY", "none")
 
 GC_CATEGORIES_SNAPSHOT_CSV = os.getenv("GC_CATEGORIES_SNAPSHOT_CSV", "global_catalog/data/snapshots/categories_deduped.csv")
 
+STAGE = os.getenv("STAGE", "staging")
+GC_MAPPING_S3_BUCKET = os.getenv(
+    "GC_MAPPING_S3_BUCKET",
+    f"blaze-{STAGE}-global-catalog-service-prod-bucket",
+)
+GC_MAPPING_S3_PREFIX = os.getenv("GC_MAPPING_S3_PREFIX", "categories_mapping")
+REDSHIFT_DB_USER = os.getenv("REDSHIFT_DB_USER")

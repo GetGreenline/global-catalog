@@ -18,11 +18,10 @@ from global_catalog.pipelines.categories.resolve_category_pairs import (
 
 
 class TestResolveCategoryPairs:
-    """Concise unit tests for resolve_category_pairs functions."""
 
     @pytest.fixture
     def sample_cats_data(self) -> DataFrame:
-        """Sample categories data for testing."""
+        """Sample category data for testing."""
         return pd.DataFrame({
             'id': ['1', '2', '3'],
             'category_id': ['cat1', 'cat2', 'cat3'],
@@ -30,7 +29,6 @@ class TestResolveCategoryPairs:
             'level_one': ['Flowers', 'Edibles', 'CBD'],
             'level_two': ['Indica', 'Gummies', 'Oil'],
             'level_three': ['Purple', 'Fruit', 'Tincture'],
-            'country': ['US', 'CA', 'US'],
             'updated_at': [
                 '2025-09-08 18:55:00',
                 'invalid_timestamp',
@@ -66,7 +64,7 @@ class TestResolveCategoryPairs:
         assert result['updated_at'].iloc[0] == expected_timestamp
 
         # Should have all required columns
-        required_cols = ['id', 'category_id', 'source', 'level_one', 'level_two', 'level_three', 'country',
+        required_cols = ['id', 'category_id', 'source', 'level_one', 'level_two', 'level_three',
                          'updated_at']
         for col in required_cols:
             assert col in result.columns
@@ -152,7 +150,7 @@ class TestResolveCategoryPairs:
         assert result['global_id'].notna().all()
 
         # Should have expected columns
-        expected_cols = ['global_id', 'category_id', 'source', 'country', 'updated_at']
+        expected_cols = ['global_id', 'category_id', 'source', 'updated_at']
         assert list(result.columns) == expected_cols
 
     def test_split_pretty_function(self) -> None:
@@ -200,6 +198,17 @@ class TestResolveCategoryPairs:
         row["right_source"] = "weedmaps"
         assert _winner_side(row) == "left"  # hoodie < weedmaps
 
+        # Explicit left/right override beats level counts
+        row = {
+            "left_path_pretty": "Flowers",
+            "right_path_pretty": "Flowers/Indica/Purple",
+            "left_source": "left",
+            "right_source": "right",
+            "left_id": "l1",
+            "right_id": "r1",
+        }
+        assert _winner_side(row) == "left"
+
     def test_helper_functions(self) -> None:
         """Test utility helper functions."""
         # Test _uuid_from_hash
@@ -231,7 +240,7 @@ class TestResolveCategoryPairs:
 
         result: DataFrame = _ensure_cats_contract(test_data)
 
-        # Should replace with valid timestamp
+        #should replace with valid timestamp
         timestamp_value: Any = result['updated_at'].iloc[0]
         assert pd.notna(timestamp_value)
         assert isinstance(timestamp_value, pd.Timestamp)
@@ -252,3 +261,56 @@ class TestResolveCategoryPairs:
         # Should have no NaT values
         nat_count: int = pd.isna(result['updated_at']).sum()
         assert nat_count == 0
+
+    def test_global_category_id_map_propagates_existing_global_id(self) -> None:
+        """Existing global_id on left should propagate to matched right."""
+        cats = pd.DataFrame({
+            "id": ["L1", "R1"],
+            "category_id": ["cat_left", "cat_right"],
+            "source": ["left", "right"],
+            "level_one": ["Flower", "Flower"],
+            "level_two": ["Indica", "Indica"],
+            "level_three": ["Purple", "Purple"],
+            "updated_at": ["2025-01-01", "2025-01-02"],
+            "global_id": ["gid-left", ""],
+        })
+        resolution = pd.DataFrame({
+            "id": ["L1"],
+            "dropped_id": ["R1"],
+        })
+
+        result = global_category_id_map(cats, resolution)
+        left_gid = result.loc[result["category_id"] == "cat_left", "global_id"].iloc[0]
+        right_gid = result.loc[result["category_id"] == "cat_right", "global_id"].iloc[0]
+        assert left_gid == "gid-left"
+        assert right_gid == "gid-left"
+
+    def test_global_category_id_map_mints_and_shares_gid_when_missing(self) -> None:
+        """When both sides lack global_id, matched right should receive left's minted global_id."""
+        cats = pd.DataFrame({
+            "id": ["L1", "R1"],
+            "category_id": ["cat_left", "cat_right"],
+            "source": ["left", "right"],
+            "level_one": ["Flower", "Flower"],
+            "level_two": ["Indica", "Indica"],
+            "level_three": ["Purple", "Purple"],
+            "updated_at": ["2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+            "global_id": ["", ""],
+        })
+        pairs = pd.DataFrame({
+            "left_id": ["L1"],
+            "right_id": ["R1"],
+            "left_source": ["left"],
+            "right_source": ["right"],
+            "left_path_pretty": ["Flower/Indica/Purple"],
+            "right_path_pretty": ["Flower/Indica/Purple"],
+            "similarity": [1.0],
+            "match_type": ["exact"],
+            "match_scope": ["cross"],
+        })
+        resolution = build_resolution_from_pairs(pairs, cats)
+        result = global_category_id_map(cats, resolution)
+        left_gid = result.loc[result["category_id"] == "cat_left", "global_id"].iloc[0]
+        right_gid = result.loc[result["category_id"] == "cat_right", "global_id"].iloc[0]
+        assert left_gid != ""
+        assert left_gid == right_gid
