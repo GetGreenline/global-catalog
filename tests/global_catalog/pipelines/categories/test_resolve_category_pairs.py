@@ -284,3 +284,33 @@ class TestResolveCategoryPairs:
         right_gid = result.loc[result["category_id"] == "cat_right", "global_id"].iloc[0]
         assert left_gid == "gid-left"
         assert right_gid == "gid-left"
+
+    def test_global_category_id_map_mints_and_shares_gid_when_missing(self) -> None:
+        """When both sides lack global_id, matched right should receive left's minted global_id."""
+        cats = pd.DataFrame({
+            "id": ["L1", "R1"],
+            "category_id": ["cat_left", "cat_right"],
+            "source": ["left", "right"],
+            "level_one": ["Flower", "Flower"],
+            "level_two": ["Indica", "Indica"],
+            "level_three": ["Purple", "Purple"],
+            "updated_at": ["2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+            "global_id": ["", ""],
+        })
+        pairs = pd.DataFrame({
+            "left_id": ["L1"],
+            "right_id": ["R1"],
+            "left_source": ["left"],
+            "right_source": ["right"],
+            "left_path_pretty": ["Flower/Indica/Purple"],
+            "right_path_pretty": ["Flower/Indica/Purple"],
+            "similarity": [1.0],
+            "match_type": ["exact"],
+            "match_scope": ["cross"],
+        })
+        resolution = build_resolution_from_pairs(pairs, cats)
+        result = global_category_id_map(cats, resolution)
+        left_gid = result.loc[result["category_id"] == "cat_left", "global_id"].iloc[0]
+        right_gid = result.loc[result["category_id"] == "cat_right", "global_id"].iloc[0]
+        assert left_gid != ""
+        assert left_gid == right_gid

@@ -14,8 +14,13 @@ from global_catalog.publishers.s3_publisher import mirror_artifacts_to_s3
 class CategoriesPublisher:
     #Serialize pipeline artifacts locally and mirror them to S3
 
-    def __init__(self, mirror_fn: Callable[[str, str, str], None] = mirror_artifacts_to_s3):
+    def __init__(
+        self,
+        mirror_fn: Callable[[str, str, str], None] = mirror_artifacts_to_s3,
+        upload_mapping: bool = True,
+    ):
         self._mirror_fn = mirror_fn
+        self._upload_mapping = upload_mapping
 
     def __call__(self, context: EntityPipelineContext) -> Optional[Dict[str, Any]]:
         if context is None or context.resolution is None:
@@ -56,7 +61,8 @@ class CategoriesPublisher:
             staged_df = self._format_category_global_id_map(category_global_id_map_df)
             staged_df.to_parquet(staging_parquet, index=False)
             staged_df.to_csv(staging_csv, index=False)
-            self._upload_category_mapping(staging_parquet, mapping_name)
+            if self._upload_mapping:
+                self._upload_category_mapping(staging_parquet, mapping_name)
         outputs["category_global_id_map_local"] = str(staging_parquet)
         outputs["category_global_id_map_csv_local"] = str(staging_csv)
         outputs["categories_id_mapping_parquet"] = str(staging_parquet)

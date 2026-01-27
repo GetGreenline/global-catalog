@@ -141,7 +141,8 @@ def build_resolution_from_pairs(pairs: pd.DataFrame, cats_df: pd.DataFrame) -> p
         axis=1
     )
     p = p.sort_values(["pair_key", "similarity"], ascending=[True, False]).drop_duplicates("pair_key")
-    p["winner"] = p.apply(_winner_side, axis=1)
+    # Left side is always the anchor for global_id attribution.
+    p["winner"] = "left"
 
     keep_cols = {"left": ["left_id", "left_source", "left_path_pretty"],
                  "right": ["right_id", "right_source", "right_path_pretty"]}

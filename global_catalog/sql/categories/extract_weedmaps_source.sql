@@ -4,7 +4,7 @@ select
     swc.level_one,
     swc.level_two,
     swc.level_three,
-    swc.source,
+    'test_source' as source,
     swc.updated_at
 from staging.stg_us_categories swc
 where swc.source = 'weedmaps';

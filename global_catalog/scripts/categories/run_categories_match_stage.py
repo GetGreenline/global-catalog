@@ -18,12 +18,13 @@ from global_catalog.pipelines.categories.category_pipeline import (
 )
 from global_catalog.pipelines.categories.match_publisher import CategoriesMatchPublisher
 from global_catalog.pipelines.categories.publisher import CategoriesPublisher
+from global_catalog.pipelines.categories.resolve_category_pairs import build_resolution_from_pairs
 from global_catalog.repositories.s3_repo import S3Repo
 
 
-class NoopResolver:
+class CategoryResolver:
     def resolve(self, pairs_df, df_raw):
-        return None
+        return build_resolution_from_pairs(pairs_df, df_raw)
 
 
 class NullRepo:
@@ -67,6 +68,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snapshot-csv", default=None, help="Local CSV snapshot path")
     parser.add_argument("--csv-path", default=None, help="CSV file to ingest directly")
     parser.add_argument("--resolve", action="store_true", default=False, help="Run resolve after matching")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        default=False,
+        help="Skip S3 uploads (local artifacts only)",
+    )
     return parser.parse_args()
 
 
@@ -105,10 +112,12 @@ def main() -> None:
         synonyms_path="global_catalog/normalization/rules/categories.synonyms.yml",
     )
     matcher = CategoriesMatcher(cfg)
-    resolver = NoopResolver()
+    resolver = CategoryResolver()
 
     match_publisher = CategoriesMatchPublisher()
-    resolution_publisher = CategoriesPublisher() if args.resolve else None
+    resolution_publisher = (
+        CategoriesPublisher(upload_mapping=not args.offline) if args.resolve else None
+    )
     pipe = CategoryPipeline(
         repo=repo,
         matcher=matcher,
