@@ -21,7 +21,7 @@ class TestResolveCategoryPairs:
 
     @pytest.fixture
     def sample_cats_data(self) -> DataFrame:
-        """sample data categories data for testing."""
+        """Sample category data for testing."""
         return pd.DataFrame({
             'id': ['1', '2', '3'],
             'category_id': ['cat1', 'cat2', 'cat3'],
