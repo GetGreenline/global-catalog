@@ -339,6 +339,8 @@ def global_category_id_map(cats_df: pd.DataFrame, resolution: pd.DataFrame) -> p
         .to_dict()
     )
     all_cats["global_id"] = all_cats["anchor_id"].map(gid_map)
+    # Note: entries in gid_map that normalize to an empty string are intentionally treated
+    # as missing here, so they will cause new global_ids to be minted from anchor_id.
     missing_gid = all_cats["global_id"].isna() | (all_cats["global_id"].astype(str).str.strip() == "")
     if missing_gid.any():
         all_cats.loc[missing_gid, "global_id"] = all_cats.loc[missing_gid, "anchor_id"].astype(str).apply(_uuid_from_hash)
