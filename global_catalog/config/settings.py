@@ -4,7 +4,7 @@ OUT_STAGE = 'local'
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_PROFILE = os.getenv("AWS_PROFILE", "prod-developer")
-AWS_S3_PROFILE = os.getenv("AWS_S3_PROFILE", "blaze_development")
+AWS_S3_PROFILE = os.getenv("AWS_S3_PROFILE")
 
 
 GC_S3_BUCKET = os.getenv("GC_S3_BUCKET", "blaze-sandbox-global-catalog-service-staging-bucket")
